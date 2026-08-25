@@ -1,0 +1,9 @@
+condition,baseline_success_to_ablation_success,baseline_success_to_ablation_failure,baseline_failure_to_ablation_success,baseline_failure_to_ablation_failure,paired_episodes
+baseline,97,0,0,3,100
+drop_00_04,95,2,2,1,100
+drop_05_09,94,3,1,2,100
+drop_10_14,95,2,2,1,100
+drop_15_19,68,29,2,1,100
+drop_20_24,87,10,2,1,100
+drop_25_29,65,32,2,1,100
+drop_all,0,97,0,3,100

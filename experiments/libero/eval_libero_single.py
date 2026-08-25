@@ -35,12 +35,19 @@ from experiments.libero.libero_utils import (
     save_rollout_video,
 )
 from experiments.libero.worker_pool import pop_task, write_worker_status
+from experiments.asre_diagnosis.common import (
+    atomic_write_json,
+    build_run_metadata,
+    get_num_model_layers,
+    now_iso,
+    resolve_condition,
+)
 from fastwam.datasets.lerobot.processors.fastwam_processor import FastWAMProcessor
 from fastwam.datasets.lerobot.utils.normalizer import load_dataset_stats_from_json
 from fastwam.utils.pytorch_utils import set_global_seed
 from fastwam.datasets.lerobot.robot_video_dataset import DEFAULT_PROMPT
 from libero.libero import benchmark, get_libero_path
-from action_ensembler import ActionEnsembler
+from experiments.libero.action_ensembler import ActionEnsembler
 
 OmegaConf.register_new_resolver("eval", eval)
 OmegaConf.register_new_resolver("max", lambda x: max(x))
@@ -137,9 +144,25 @@ def _place_text_encoder(model: torch.nn.Module, device: Optional[str]) -> None:
             )
 
     text_encoder.to(target).eval()
+    if hasattr(model, "text_encoder_device"):
+        model.text_encoder_device = target
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
     logging.info("Placed text encoder on %s", target)
+    for device_index in range(torch.cuda.device_count()):
+        try:
+            free_bytes, total_bytes = torch.cuda.mem_get_info(device_index)
+            logging.info(
+                "CUDA memory cuda:%d after model placement: %.2f GiB free / %.2f GiB total; "
+                "process allocated %.2f GiB, reserved %.2f GiB",
+                device_index,
+                free_bytes / 2**30,
+                total_bytes / 2**30,
+                torch.cuda.memory_allocated(device_index) / 2**30,
+                torch.cuda.memory_reserved(device_index) / 2**30,
+            )
+        except RuntimeError as exc:
+            logging.warning("Could not query CUDA memory for cuda:%d: %s", device_index, exc)
 
 
 @torch.no_grad()
@@ -400,7 +423,7 @@ def _compute_clip_mean_psnr(
     return float(np.mean(frame_psnr_values))
 
 
-def _predict_action_chunk(
+def _prepare_action_inference(
     obs: dict,
     task_description: str,
     model: torch.nn.Module,
@@ -411,7 +434,7 @@ def _predict_action_chunk(
     input_w: int,
     input_h: int,
     model_device: str,
-) -> tuple[np.ndarray, dict, Optional[list[Image.Image]]]:
+) -> tuple[dict[str, Any], dict]:
     num_inference_steps_cfg = cfg.EVALUATION.get("num_inference_steps", None)
     if num_inference_steps_cfg is None:
         num_inference_steps = int(cfg.get("eval_num_inference_steps", 20))
@@ -451,7 +474,6 @@ def _predict_action_chunk(
         "tiled": bool(cfg.EVALUATION.get("tiled", False)),
     }
     visualize_future_video = bool(cfg.EVALUATION.get("visualize_future_video", False))
-    predicted_future_frames = None
     if visualize_future_video:
         infer_kwargs["num_video_frames"] = _get_num_video_frames(cfg)
     elif "num_video_frames" in inspect.signature(model.infer_action).parameters:
@@ -469,30 +491,108 @@ def _predict_action_chunk(
         raise ValueError(
             f"{type(model).__name__}.{infer_method.__name__} does not support `compile_action_infer`."
         )
+    return infer_kwargs, imgs
+
+
+def _run_prepared_action_inference(
+    model: torch.nn.Module,
+    cfg: DictConfig,
+    infer_kwargs: dict[str, Any],
+) -> tuple[torch.Tensor, Optional[list[Image.Image]]]:
+    visualize_future_video = bool(cfg.EVALUATION.get("visualize_future_video", False))
+    diagnosis_cfg = cfg.get("ASRE_DIAGNOSIS", {})
+    diagnosis_enabled = bool(diagnosis_cfg.get("enabled", False))
+    if diagnosis_enabled and visualize_future_video:
+        raise ValueError(
+            "ASRE_DIAGNOSIS targets infer_action and requires "
+            "EVALUATION.visualize_future_video=false."
+        )
+
+    compile_action_infer = bool(cfg.EVALUATION.get("compile_action_infer", False))
+    infer_method = model.infer_joint if visualize_future_video else model.infer_action
+    call_kwargs = dict(infer_kwargs)
+    if diagnosis_enabled:
+        if "disabled_video_layers" not in inspect.signature(infer_method).parameters:
+            raise ValueError(
+                f"{type(model).__name__}.{infer_method.__name__} does not support "
+                "the video-K/V diagnosis intervention."
+            )
+        call_kwargs["disabled_video_layers"] = tuple(
+            int(layer) for layer in diagnosis_cfg.get("disabled_video_layers", ())
+        )
 
     with torch.no_grad():
         if visualize_future_video:
             pred = model.infer_joint(
-                **infer_kwargs,
+                **call_kwargs,
                 compile_action_infer=compile_action_infer,
             )
             predicted_future_frames = _select_predicted_future_frames(pred["video"], cfg)
         else:
             pred = model.infer_action(
-                **infer_kwargs,
+                **call_kwargs,
                 compile_action_infer=compile_action_infer,
             )
-    action = pred["action"]  # [T, D]
+            predicted_future_frames = None
+    return pred["action"], predicted_future_frames
 
-    action = _denormalize_action(action, processor)[0]  # [T, D]
 
-    # The dataloader flips the sign of the gripper action to align with other datasets
-    # (0 = close, 1 = open), so flip it back (-1 = open, +1 = close) before executing the action
+def _postprocess_action(
+    raw_action: torch.Tensor,
+    processor: FastWAMProcessor,
+    cfg: DictConfig,
+) -> np.ndarray:
+    action = _denormalize_action(raw_action, processor)[0]  # [T, D]
+
+    # The dataloader flips the sign of the gripper action to align with other datasets.
     action[..., -1] = action[..., -1] * 2 - 1
     action = invert_gripper_action(action)
     if bool(cfg.EVALUATION.get("binarize_gripper", False)):
         action[..., -1] = np.sign(action[..., -1])
-    return action, imgs, predicted_future_frames
+    return action
+
+
+def _predict_action_chunk(
+    obs: dict,
+    task_description: str,
+    model: torch.nn.Module,
+    processor: FastWAMProcessor,
+    cfg: DictConfig,
+    *,
+    action_horizon: int,
+    input_w: int,
+    input_h: int,
+    model_device: str,
+) -> tuple[np.ndarray, dict, Optional[list[Image.Image]], Optional[dict[str, Any]]]:
+    infer_kwargs, imgs = _prepare_action_inference(
+        obs=obs,
+        task_description=task_description,
+        model=model,
+        processor=processor,
+        cfg=cfg,
+        action_horizon=action_horizon,
+        input_w=input_w,
+        input_h=input_h,
+        model_device=model_device,
+    )
+    raw_action, predicted_future_frames = _run_prepared_action_inference(
+        model=model,
+        cfg=cfg,
+        infer_kwargs=infer_kwargs,
+    )
+    action = _postprocess_action(raw_action, processor, cfg)
+    diagnosis_cfg = cfg.get("ASRE_DIAGNOSIS", {})
+    if bool(diagnosis_cfg.get("enabled", False)) and bool(
+        diagnosis_cfg.get("save_action_trace", True)
+    ):
+        trace = {
+            "action_inference_seed": infer_kwargs["seed"],
+            "raw_action": raw_action.detach().to(device="cpu", dtype=torch.float32).numpy(),
+            "executed_action": action.copy(),
+        }
+    else:
+        trace = None
+    return action, imgs, predicted_future_frames, trace
 
 
 def _get_max_steps(task_suite_name: str) -> int:
@@ -521,12 +621,20 @@ def run_single_episode(
     input_w: int,
     input_h: int,
     model_device: str,
-) -> tuple[bool, list, list[dict[str, Any]], Optional[float]]:
+) -> tuple[bool, list, list[dict[str, Any]], Optional[float], list[dict[str, Any]]]:
     max_steps = _get_max_steps(cfg.EVALUATION.task_suite_name)
     replan_steps = int(cfg.EVALUATION.get("replan_steps", 5))
     num_steps_wait = int(cfg.EVALUATION.get("num_steps_wait", 5))
     use_action_ensembler = bool(cfg.EVALUATION.get("use_action_ensembler", False))
     visualize_future_video = bool(cfg.EVALUATION.get("visualize_future_video", False))
+    diagnosis_cfg = cfg.get("ASRE_DIAGNOSIS", {})
+    diagnosis_enabled = bool(diagnosis_cfg.get("enabled", False))
+    record_rollout_video = not diagnosis_enabled or bool(
+        diagnosis_cfg.get("save_rollout_video", False)
+    )
+    save_action_trace = diagnosis_enabled and bool(
+        diagnosis_cfg.get("save_action_trace", True)
+    )
     capture_steps = set(_get_future_frame_capture_steps(cfg)[1:])
 
     env.reset()
@@ -542,6 +650,8 @@ def run_single_episode(
     current_predicted_future_clip: Optional[dict[str, Any]] = None
     current_replan_step = 0
     current_replan_idx = -1
+    policy_replan_idx = -1
+    action_trace: list[dict[str, Any]] = []
 
     t = 0
     done = False
@@ -554,7 +664,7 @@ def run_single_episode(
             continue
 
         if len(pending_actions) == 0:
-            action_chunk, imgs, predicted_future_frames = _predict_action_chunk(
+            action_chunk, imgs, predicted_future_frames, trace = _predict_action_chunk(
                 obs=obs,
                 task_description=task_description,
                 model=model,
@@ -565,6 +675,22 @@ def run_single_episode(
                 input_h=input_h,
                 model_device=model_device,
             )
+            policy_replan_idx += 1
+            if save_action_trace:
+                assert trace is not None
+                trace.update(
+                    {
+                        "task_suite": str(cfg.EVALUATION.task_suite_name),
+                        "task_id": int(cfg.EVALUATION.task_id),
+                        "diagnosis_condition": str(
+                            diagnosis_cfg.get("condition_name", "baseline")
+                        ),
+                        "episode_id": int(episode_idx),
+                        "replan_id": int(policy_replan_idx),
+                        "environment_step": int(t),
+                    }
+                )
+                action_trace.append(trace)
             if predicted_future_frames is not None:
                 current_replan_idx += 1
                 current_predicted_future_clip = {
@@ -580,10 +706,12 @@ def run_single_episode(
                 pending_actions = [ensembler.get_action(ts).tolist() for ts in range(t, t + replan_steps)]
             else:
                 pending_actions = action_chunk[:replan_steps].tolist()
-            replay_images.append(imgs.copy())
+            if record_rollout_video:
+                replay_images.append(imgs.copy())
         else:
-            imgs = get_libero_image(obs)
-            replay_images.append(imgs.copy())
+            if record_rollout_video:
+                imgs = get_libero_image(obs)
+                replay_images.append(imgs.copy())
 
         obs, _, done, _ = env.step(pending_actions.pop(0))
         if visualize_future_video and current_predicted_future_clip is not None:
@@ -644,7 +772,7 @@ def run_single_episode(
     episode_mean_psnr = (
         float(np.mean(episode_future_clip_psnr)) if len(episode_future_clip_psnr) > 0 else None
     )
-    return bool(done), replay_images, predicted_future_video_clips, episode_mean_psnr
+    return bool(done), replay_images, predicted_future_video_clips, episode_mean_psnr, action_trace
 
 
 def run_single_task(
@@ -663,6 +791,10 @@ def run_single_task(
 ) -> dict:
     env, task_description = get_libero_env(task, LIBERO_ENV_RESOLUTION, cfg.get("seed"))
     visualize_future_video = bool(cfg.EVALUATION.get("visualize_future_video", False))
+    diagnosis_cfg = cfg.get("ASRE_DIAGNOSIS", {})
+    diagnosis_enabled = bool(diagnosis_cfg.get("enabled", False))
+    save_rollout = not diagnosis_enabled or bool(diagnosis_cfg.get("save_rollout_video", False))
+    save_action_trace = diagnosis_enabled and bool(diagnosis_cfg.get("save_action_trace", True))
     results = {
         "successes": 0,
         "failure_episodes": [],
@@ -674,7 +806,7 @@ def run_single_task(
         results["future_video_psnr_mean"] = None
 
     for trial_idx in range(int(cfg.EVALUATION.num_trials)):
-        success, replay_images, predicted_future_video_clips, episode_mean_psnr = run_single_episode(
+        success, replay_images, predicted_future_video_clips, episode_mean_psnr, action_trace = run_single_episode(
             env=env,
             initial_state=initial_states[trial_idx],
             task_description=task_description,
@@ -695,13 +827,21 @@ def run_single_task(
         if visualize_future_video:
             results["episode_future_video_psnr"].append(episode_mean_psnr)
 
-        save_rollout_video(
-            video_dir,
-            replay_images,
-            f"task{cfg.EVALUATION.task_id}_trial{trial_idx}",
-            success=success,
-            task_description=task_description,
-        )
+        if save_rollout:
+            save_rollout_video(
+                video_dir,
+                replay_images,
+                f"task{cfg.EVALUATION.task_id}_trial{trial_idx}",
+                success=success,
+                task_description=task_description,
+            )
+        if save_action_trace:
+            trace_dir = video_dir.parent / "action_traces"
+            trace_dir.mkdir(parents=True, exist_ok=True)
+            trace_path = trace_dir / f"task{cfg.EVALUATION.task_id}_trial{trial_idx}.jsonl"
+            with trace_path.open("w", encoding="utf-8") as handle:
+                for record in action_trace:
+                    handle.write(json.dumps(record, cls=NumpyEncoder) + "\n")
         if visualize_future_video:
             if len(predicted_future_video_clips) == 0:
                 logging.warning(
@@ -789,7 +929,11 @@ def _run_task_to_file(
         )
 
     video_dir = output_root / suite_name / "videos"
-    video_dir.mkdir(parents=True, exist_ok=True)
+    diagnosis_cfg = task_cfg.get("ASRE_DIAGNOSIS", {})
+    if not bool(diagnosis_cfg.get("enabled", False)) or bool(
+        diagnosis_cfg.get("save_rollout_video", False)
+    ):
+        video_dir.mkdir(parents=True, exist_ok=True)
     predicted_video_dir = output_root / suite_name / "predicted_videos"
     if bool(task_cfg.EVALUATION.get("visualize_future_video", False)):
         predicted_video_dir.mkdir(parents=True, exist_ok=True)
@@ -807,6 +951,15 @@ def _run_task_to_file(
         "start_time": time.strftime("%Y-%m-%d %H:%M:%S"),
         "duration": 0,
     }
+    if bool(diagnosis_cfg.get("enabled", False)):
+        results.update(
+            {
+                "diagnosis_condition": str(diagnosis_cfg.get("condition_name", "baseline")),
+                "disabled_video_layers": [
+                    int(layer) for layer in diagnosis_cfg.get("disabled_video_layers", ())
+                ],
+            }
+        )
     if worker_id is not None:
         results["worker_id"] = worker_id
     results.update(
@@ -911,6 +1064,7 @@ def _run_worker_loop(
 
 @hydra.main(version_base="1.3", config_path="../../configs", config_name="sim_libero.yaml")
 def eval_single_process(cfg: DictConfig):
+    run_start_timestamp = now_iso()
     if cfg.get("seed") is not None:
         set_global_seed(int(cfg.seed), get_worker_init_fn=False)
 
@@ -927,10 +1081,21 @@ def eval_single_process(cfg: DictConfig):
 
     model_device = _resolve_eval_device(cfg)
     model_dtype = _mixed_precision_to_model_dtype(cfg.get("mixed_precision", "bf16"))
-    model = instantiate(cfg.model, model_dtype=model_dtype, device=model_device)
+    model = instantiate(
+        cfg.model,
+        model_dtype=model_dtype,
+        device=model_device,
+        text_encoder_device=cfg.EVALUATION.get("text_encoder_device"),
+    )
     _load_model_checkpoint(model, str(cfg.ckpt))
     model = model.to(model_device).eval()
     _place_text_encoder(model, cfg.EVALUATION.get("text_encoder_device"))
+
+    num_model_layers = get_num_model_layers(model)
+    diagnosis_cfg = cfg.get("ASRE_DIAGNOSIS", {})
+    condition = resolve_condition(diagnosis_cfg, num_model_layers)
+    cfg.ASRE_DIAGNOSIS.condition_name = condition.name
+    cfg.ASRE_DIAGNOSIS.disabled_video_layers = list(condition.disabled_video_layers)
 
     dataset_stats_path = _resolve_dataset_stats_path(cfg)
     dataset_stats = load_dataset_stats_from_json(str(dataset_stats_path))
@@ -954,6 +1119,92 @@ def eval_single_process(cfg: DictConfig):
     output_root = Path(
         os.path.expanduser(os.path.expandvars(str(cfg.EVALUATION.output_dir)))
     ).resolve()
+
+    configured_task_ids = cfg.EVALUATION.get("task_ids", None)
+    if configured_task_ids is None:
+        task_ids = [int(cfg.EVALUATION.task_id)]
+    else:
+        task_ids = [int(task_id) for task_id in configured_task_ids]
+        if not task_ids:
+            raise ValueError("EVALUATION.task_ids must not be empty when provided.")
+        if len(set(task_ids)) != len(task_ids):
+            raise ValueError(f"EVALUATION.task_ids contains duplicates: {task_ids}")
+
+    diagnosis_enabled = bool(diagnosis_cfg.get("enabled", False))
+    run_metadata = None
+    metadata_path = output_root / "run_metadata.json"
+    if diagnosis_enabled:
+        num_inference_steps_cfg = cfg.EVALUATION.get("num_inference_steps", None)
+        num_inference_steps = (
+            int(cfg.get("eval_num_inference_steps", 20))
+            if num_inference_steps_cfg is None
+            else int(num_inference_steps_cfg)
+        )
+        run_metadata = build_run_metadata(
+            repo_root=project_root,
+            checkpoint=str(cfg.ckpt),
+            dataset_stats_path=str(dataset_stats_path),
+            condition=condition,
+            num_layers=num_model_layers,
+            task_suite=str(cfg.EVALUATION.task_suite_name),
+            task_ids=task_ids,
+            seed=None if cfg.get("seed") is None else int(cfg.seed),
+            num_trials=int(cfg.EVALUATION.num_trials),
+            action_horizon=action_horizon,
+            num_inference_steps=num_inference_steps,
+            replan_steps=int(cfg.EVALUATION.get("replan_steps", 5)),
+            start_timestamp=run_start_timestamp,
+        )
+        run_metadata.update(
+            {
+                "compile_action_infer": bool(cfg.EVALUATION.get("compile_action_infer", False)),
+                "binarize_gripper": bool(cfg.EVALUATION.get("binarize_gripper", False)),
+                "sigma_shift": (
+                    None
+                    if cfg.EVALUATION.get("sigma_shift") is None
+                    else float(cfg.EVALUATION.get("sigma_shift"))
+                ),
+                "rand_device": str(cfg.EVALUATION.get("rand_device", "cpu")),
+            }
+        )
+        if metadata_path.exists():
+            with metadata_path.open("r", encoding="utf-8") as handle:
+                existing_metadata = json.load(handle)
+            resume_keys = (
+                "checkpoint_path",
+                "dataset_stats_path",
+                "diagnosis_condition",
+                "disabled_video_layers",
+                "num_model_layers",
+                "task_suite",
+                "task_ids",
+                "seed",
+                "number_of_trials",
+                "action_horizon",
+                "number_of_inference_steps",
+                "replan_steps",
+                "compile_action_infer",
+                "binarize_gripper",
+                "sigma_shift",
+                "rand_device",
+            )
+            mismatches = {
+                key: {"existing": existing_metadata.get(key), "requested": run_metadata.get(key)}
+                for key in resume_keys
+                if existing_metadata.get(key) != run_metadata.get(key)
+            }
+            if mismatches:
+                raise ValueError(
+                    "Refusing to resume a diagnosis output directory with incompatible settings: "
+                    f"{json.dumps(mismatches, sort_keys=True)}"
+                )
+            run_metadata["start_timestamp"] = existing_metadata.get(
+                "start_timestamp", run_metadata["start_timestamp"]
+            )
+        atomic_write_json(metadata_path, run_metadata)
+        print("ASRE diagnosis run metadata:")
+        print(json.dumps(run_metadata, indent=2, cls=NumpyEncoder))
+
     if os.environ.get("LIBERO_WORKER_MODE") == "1":
         _run_worker_loop(
             cfg=cfg,
@@ -965,30 +1216,53 @@ def eval_single_process(cfg: DictConfig):
             model_device=model_device,
             output_root=output_root,
         )
+        if run_metadata is not None:
+            run_metadata["end_timestamp"] = now_iso()
+            atomic_write_json(metadata_path, run_metadata)
         return None
 
-    _, results = _run_task_to_file(
-        cfg=cfg,
-        suite_name=str(cfg.EVALUATION.task_suite_name),
-        task_id=int(cfg.EVALUATION.task_id),
-        model=model,
-        processor=processor,
-        action_horizon=action_horizon,
-        input_w=input_w,
-        input_h=input_h,
-        model_device=model_device,
-        output_root=output_root,
-        worker_id=None,
-    )
+    all_results = []
+    for task_id in task_ids:
+        existing_result = _result_file(
+            output_root,
+            str(cfg.EVALUATION.task_suite_name),
+            task_id,
+        )
+        if existing_result is not None:
+            logging.info("Skipping completed task %s: %s", task_id, existing_result)
+            with existing_result.open("r", encoding="utf-8") as handle:
+                all_results.append(json.load(handle))
+            continue
 
-    print(
-        f"Task {cfg.EVALUATION.task_id} completed: "
-        f"{results['successes']}/{cfg.EVALUATION.num_trials} successes"
-    )
-    if results.get("future_video_psnr_mean") is not None:
-        print(f"Task {cfg.EVALUATION.task_id} future-video PSNR mean: {results['future_video_psnr_mean']:.4f}")
-    print(f"Time taken: {results['duration']:.2f} seconds")
-    return results
+        _, results = _run_task_to_file(
+            cfg=cfg,
+            suite_name=str(cfg.EVALUATION.task_suite_name),
+            task_id=task_id,
+            model=model,
+            processor=processor,
+            action_horizon=action_horizon,
+            input_w=input_w,
+            input_h=input_h,
+            model_device=model_device,
+            output_root=output_root,
+            worker_id=None,
+        )
+        all_results.append(results)
+        print(
+            f"Task {task_id} completed: "
+            f"{results['successes']}/{cfg.EVALUATION.num_trials} successes"
+        )
+        if results.get("future_video_psnr_mean") is not None:
+            print(
+                f"Task {task_id} future-video PSNR mean: "
+                f"{results['future_video_psnr_mean']:.4f}"
+            )
+        print(f"Time taken: {results['duration']:.2f} seconds")
+
+    if run_metadata is not None:
+        run_metadata["end_timestamp"] = now_iso()
+        atomic_write_json(metadata_path, run_metadata)
+    return all_results[0] if len(all_results) == 1 else all_results
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 import torch
 
@@ -75,6 +75,7 @@ class FastWAMOptionalIDM(FastWAMIDM):
         tiled: bool = False,
         compile_action_infer: bool = False,
         action_infer_mode: str = "idm",
+        disabled_video_layers: Optional[Sequence[int]] = None,
     ) -> dict[str, Any]:
         if action_infer_mode == "idm":
             if num_video_frames is None:
@@ -96,6 +97,7 @@ class FastWAMOptionalIDM(FastWAMIDM):
                 rand_device=rand_device,
                 tiled=tiled,
                 compile_action_infer=compile_action_infer,
+                disabled_video_layers=disabled_video_layers,
             )
 
         if action_infer_mode == "first_frame":
@@ -115,6 +117,7 @@ class FastWAMOptionalIDM(FastWAMIDM):
                 rand_device=rand_device,
                 tiled=tiled,
                 compile_action_infer=compile_action_infer,
+                disabled_video_layers=disabled_video_layers,
             )
 
         raise ValueError("`action_infer_mode` must be one of: idm, first_frame.")

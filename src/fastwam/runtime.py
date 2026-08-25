@@ -91,6 +91,7 @@ def create_fastwam(
     redirect_common_files: bool = True,
     model_dtype: torch.dtype = torch.bfloat16,
     device: str = "cuda",
+    text_encoder_device: str | None = None,
 ):
     from .models.wan22.fastwam import FastWAM
 
@@ -136,6 +137,7 @@ def create_fastwam(
 
     return FastWAM.from_wan22_pretrained(
         device=device,
+        text_encoder_device=text_encoder_device,
         torch_dtype=model_dtype,
         model_id=model_id,
         tokenizer_model_id=tokenizer_model_id,
@@ -177,6 +179,7 @@ def create_fastwam_joint(
     redirect_common_files: bool = True,
     model_dtype: torch.dtype = torch.bfloat16,
     device: str = "cuda",
+    text_encoder_device: str | None = None,
 ):
     from .models.wan22.fastwam_joint import FastWAMJoint
 
@@ -222,6 +225,7 @@ def create_fastwam_joint(
 
     return FastWAMJoint.from_wan22_pretrained(
         device=device,
+        text_encoder_device=text_encoder_device,
         torch_dtype=model_dtype,
         model_id=model_id,
         tokenizer_model_id=tokenizer_model_id,
@@ -264,6 +268,7 @@ def create_fastwam_idm(
     redirect_common_files: bool = True,
     model_dtype: torch.dtype = torch.bfloat16,
     device: str = "cuda",
+    text_encoder_device: str | None = None,
 ):
     from .models.wan22.fastwam_idm import (
         FastWAMIDM,
@@ -311,6 +316,7 @@ def create_fastwam_idm(
 
     return FastWAMIDM.from_wan22_pretrained(
         device=device,
+        text_encoder_device=text_encoder_device,
         torch_dtype=model_dtype,
         model_id=model_id,
         tokenizer_model_id=tokenizer_model_id,
@@ -356,6 +362,7 @@ def create_fastwam_optional_idm(
     redirect_common_files: bool = True,
     model_dtype: torch.dtype = torch.bfloat16,
     device: str = "cuda",
+    text_encoder_device: str | None = None,
 ):
     from .models.wan22.fastwam_optional_idm import FastWAMOptionalIDM
 
@@ -401,6 +408,7 @@ def create_fastwam_optional_idm(
 
     return FastWAMOptionalIDM.from_wan22_pretrained(
         device=device,
+        text_encoder_device=text_encoder_device,
         torch_dtype=model_dtype,
         model_id=model_id,
         tokenizer_model_id=tokenizer_model_id,

@@ -140,6 +140,7 @@ def _resolve_configs(model_id: str, tokenizer_model_id: str, redirect_common_fil
 
 def load_wan22_ti2v_5b_components(
     device: str = "cuda",
+    text_encoder_device: str | None = None,
     torch_dtype: torch.dtype = torch.bfloat16,
     model_id: str = "Wan-AI/Wan2.2-TI2V-5B",
     tokenizer_model_id: str = "Wan-AI/Wan2.1-T2V-1.3B",
@@ -189,11 +190,13 @@ def load_wan22_ti2v_5b_components(
     text_encoder_path: str | None = None
     tokenizer_path: str | None = None
     if load_text_encoder:
+        resolved_text_device = device if text_encoder_device is None else text_encoder_device
+        logger.info("Loading text encoder directly on %s", resolved_text_device)
         text_encoder = _load_registered_model(
             text_config.path,
             "wan_video_text_encoder",
             torch_dtype=torch_dtype,
-            device=device,
+            device=resolved_text_device,
         )
         tokenizer = HuggingfaceTokenizer(
             name=tokenizer_config.path,

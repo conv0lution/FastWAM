@@ -1,4 +1,4 @@
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 import torch
 import torch.nn.functional as F
@@ -379,9 +379,27 @@ class FastWAMIDM(FastWAMJoint):
         rand_device: str = "cpu",
         tiled: bool = False,
         compile_action_infer: bool = False,
+        disabled_video_layers: Optional[Sequence[int]] = None,
     ) -> dict[str, Any]:
         del negative_prompt, text_cfg_scale
         self.eval()
+        if disabled_video_layers is None:
+            disabled_video_layers_tuple: tuple[int, ...] = ()
+        else:
+            requested_layers = list(disabled_video_layers)
+            if any(isinstance(layer, bool) or not isinstance(layer, int) for layer in requested_layers):
+                raise TypeError("`disabled_video_layers` must contain only integer layer indices.")
+            if len(set(requested_layers)) != len(requested_layers):
+                raise ValueError("`disabled_video_layers` must not contain duplicate indices.")
+            invalid_layers = [
+                layer for layer in requested_layers if layer < 0 or layer >= self.mot.num_layers
+            ]
+            if invalid_layers:
+                raise ValueError(
+                    "`disabled_video_layers` contains out-of-range indices "
+                    f"{invalid_layers}; valid range is [0, {self.mot.num_layers - 1}]."
+                )
+            disabled_video_layers_tuple = tuple(sorted(requested_layers))
 
         if input_image.ndim == 3:
             input_image = input_image.unsqueeze(0)
@@ -580,6 +598,7 @@ class FastWAMIDM(FastWAMJoint):
                 video_cache_k=video_cache_k,
                 video_cache_v=video_cache_v,
                 action_attention_mask=action_attention_mask,
+                disabled_video_layers=disabled_video_layers_tuple,
             )
             latents_action = self.infer_action_scheduler.step(pred_action, step_delta_action, latents_action)
 

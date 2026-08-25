@@ -16,6 +16,7 @@ model:
 EVALUATION:
   task_suite_name: libero_spatial
   task_id: 0
+  task_ids: null
   num_trials: 50
   output_dir: ./evaluate_results/libero/${hydra:runtime.choices.task}/${now:%Y%m%d_%H%M%S}
 
@@ -41,6 +42,19 @@ EVALUATION:
   dataset_stats_path: null
   device: cuda
   text_encoder_device: null
+
+ASRE_DIAGNOSIS:
+  enabled: false
+  mode: drop_video_kv
+  disabled_video_layers: []
+  condition_name: baseline
+  condition_index: null
+  save_action_trace: true
+  save_rollout_video: false
+  state_bank_dir: null
+  max_states_per_episode: 5
+  offline_output_dir: null
+  smoke_report_path: null
 
 MULTIRUN:
   create_only: false

@@ -376,6 +376,7 @@ class MoT(nn.Module):
         video_kv_cache: list[dict[str, torch.Tensor]],
         attention_mask: torch.Tensor,
         video_seq_len: int,
+        disabled_video_layers: tuple[int, ...] = (),
     ) -> torch.Tensor:
         """Run action branch with cached video K/V instead of recomputing video tokens.
 
@@ -449,14 +450,22 @@ class MoT(nn.Module):
                     f"`video_kv_cache[{layer_idx}]` seq len mismatch, expected {video_seq_len}."
                 )
 
-            # Mixed attention: action queries attend to cached video K/V plus current action K/V.
-            k_cat = torch.cat([k_video, k_action], dim=1)
-            v_cat = torch.cat([v_video, v_action], dim=1)
+            # Diagnosis-only intervention: remove exactly the cached video K/V
+            # pathway at selected action layers. Video prefill and all action/text
+            # computations remain unchanged.
+            if layer_idx in disabled_video_layers:
+                k_cat = k_action
+                v_cat = v_action
+                layer_attention_mask = action_attention_mask[:, video_seq_len:]
+            else:
+                k_cat = torch.cat([k_video, k_action], dim=1)
+                v_cat = torch.cat([v_video, v_action], dim=1)
+                layer_attention_mask = action_attention_mask
             mixed = self._mixed_attention(
                 q_cat=q_action,
                 k_cat=k_cat,
                 v_cat=v_cat,
-                attention_mask=action_attention_mask,
+                attention_mask=layer_attention_mask,
             )
             x = self._apply_post_with_optional_checkpoint(
                 block=block,
@@ -535,9 +544,11 @@ class MoT(nn.Module):
         video_cache_k: list[torch.Tensor],
         video_cache_v: list[torch.Tensor],
         action_attention_mask: torch.Tensor,
+        disabled_video_layers: tuple[int, ...] = (),
     ) -> torch.Tensor:
         expert = self.mixtures["action"]
         x = action_tokens
+        video_seq_len = int(action_attention_mask.shape[1] - action_tokens.shape[1])
         for layer_idx in range(self.num_layers):
             block = expert.blocks[layer_idx]
             (
@@ -557,12 +568,20 @@ class MoT(nn.Module):
                 freqs=action_freqs,
                 t_mod=action_t_mod,
             )
+            if layer_idx in disabled_video_layers:
+                k_cat = k_action
+                v_cat = v_action
+                layer_attention_mask = action_attention_mask[:, video_seq_len:]
+            else:
+                k_cat = torch.cat([video_cache_k[layer_idx], k_action], dim=1)
+                v_cat = torch.cat([video_cache_v[layer_idx], v_action], dim=1)
+                layer_attention_mask = action_attention_mask
             mixed = flash_attention(
                 q=q_action,
-                k=torch.cat([video_cache_k[layer_idx], k_action], dim=1),
-                v=torch.cat([video_cache_v[layer_idx], v_action], dim=1),
+                k=k_cat,
+                v=v_cat,
                 num_heads=self.num_heads,
-                ctx_mask=action_attention_mask.to(device=q_action.device),
+                ctx_mask=layer_attention_mask.to(device=q_action.device),
             )
             x = self._apply_expert_post_block_tensor(
                 block=block,

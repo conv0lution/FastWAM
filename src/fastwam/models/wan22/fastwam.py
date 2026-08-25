@@ -29,6 +29,7 @@ class FastWAM(torch.nn.Module):
         text_dim: Optional[int] = None,
         proprio_dim: Optional[int] = None,
         device: str = "cpu",
+        text_encoder_device: str | None = None,
         torch_dtype: torch.dtype = torch.float32,
         video_train_shift: float = 5.0,
         video_infer_shift: float = 5.0,
@@ -82,6 +83,9 @@ class FastWAM(torch.nn.Module):
         self.infer_scheduler = self.infer_video_scheduler
 
         self.device = torch.device(device)
+        self.text_encoder_device = (
+            None if text_encoder_device is None else torch.device(text_encoder_device)
+        )
         self.torch_dtype = torch_dtype
         self.loss_lambda_video = float(loss_lambda_video)
         self.loss_lambda_action = float(loss_lambda_action)
@@ -94,6 +98,7 @@ class FastWAM(torch.nn.Module):
     def from_wan22_pretrained(
         cls,
         device: str = "cuda",
+        text_encoder_device: str | None = None,
         torch_dtype: torch.dtype = torch.bfloat16,
         model_id: str = "Wan-AI/Wan2.2-TI2V-5B",
         tokenizer_model_id: str = "Wan-AI/Wan2.1-T2V-1.3B",
@@ -123,6 +128,7 @@ class FastWAM(torch.nn.Module):
 
         components = load_wan22_ti2v_5b_components(
             device=device,
+            text_encoder_device=text_encoder_device,
             torch_dtype=torch_dtype,
             model_id=model_id,
             tokenizer_model_id=tokenizer_model_id,
@@ -163,6 +169,7 @@ class FastWAM(torch.nn.Module):
             text_dim=int(video_dit_config["text_dim"]),
             proprio_dim=proprio_dim,
             device=device,
+            text_encoder_device=text_encoder_device,
             torch_dtype=torch_dtype,
             video_train_shift=video_train_shift,
             video_infer_shift=video_infer_shift,
@@ -186,10 +193,20 @@ class FastWAM(torch.nn.Module):
         return model
 
     def to(self, *args, **kwargs):
-        super().to(*args, **kwargs)
+        # Module.to recursively moves registered children. Temporarily detach
+        # an explicitly sharded T5 so it never lands on the main model GPU.
+        text_encoder = self.text_encoder
+        self._modules.pop("text_encoder", None)
+        try:
+            super().to(*args, **kwargs)
+        finally:
+            self.text_encoder = text_encoder
         self.mot.to(*args, **kwargs)
         if self.text_encoder is not None:
-            self.text_encoder.to(*args, **kwargs)
+            if self.text_encoder_device is None:
+                self.text_encoder.to(*args, **kwargs)
+            else:
+                self.text_encoder.to(self.text_encoder_device)
         self.vae.to(*args, **kwargs)
         return self
 
@@ -716,6 +733,7 @@ class FastWAM(torch.nn.Module):
         video_cache_k: list[torch.Tensor],
         video_cache_v: list[torch.Tensor],
         action_attention_mask: torch.Tensor,
+        disabled_video_layers: tuple[int, ...] = (),
     ) -> torch.Tensor:
         (
             action_tokens,
@@ -739,6 +757,7 @@ class FastWAM(torch.nn.Module):
             video_cache_k=video_cache_k,
             video_cache_v=video_cache_v,
             action_attention_mask=action_attention_mask,
+            disabled_video_layers=disabled_video_layers,
         )
         return self.action_expert.post(action_tokens)
 
@@ -752,6 +771,7 @@ class FastWAM(torch.nn.Module):
         video_kv_cache: list[dict[str, torch.Tensor]],
         attention_mask: torch.Tensor,
         video_seq_len: int,
+        disabled_video_layers: tuple[int, ...] = (),
     ) -> torch.Tensor:
         """Legacy dictionary-cache path retained for the optional IDM variant."""
         action_pre = self.action_expert.pre_dit(
@@ -771,6 +791,7 @@ class FastWAM(torch.nn.Module):
             video_kv_cache=video_kv_cache,
             attention_mask=attention_mask,
             video_seq_len=video_seq_len,
+            disabled_video_layers=disabled_video_layers,
         )
         return self.action_expert.post_dit(action_tokens, action_pre)
 
@@ -999,8 +1020,26 @@ class FastWAM(torch.nn.Module):
         rand_device: str = "cpu",
         tiled: bool = False,
         compile_action_infer: bool = False,
+        disabled_video_layers: Optional[Sequence[int]] = None,
     ) -> dict[str, Any]:
         self.eval()
+        if disabled_video_layers is None:
+            disabled_video_layers_tuple: tuple[int, ...] = ()
+        else:
+            requested_layers = list(disabled_video_layers)
+            if any(isinstance(layer, bool) or not isinstance(layer, int) for layer in requested_layers):
+                raise TypeError("`disabled_video_layers` must contain only integer layer indices.")
+            if len(set(requested_layers)) != len(requested_layers):
+                raise ValueError("`disabled_video_layers` must not contain duplicate indices.")
+            invalid_layers = [
+                layer for layer in requested_layers if layer < 0 or layer >= self.mot.num_layers
+            ]
+            if invalid_layers:
+                raise ValueError(
+                    "`disabled_video_layers` contains out-of-range indices "
+                    f"{invalid_layers}; valid range is [0, {self.mot.num_layers - 1}]."
+                )
+            disabled_video_layers_tuple = tuple(sorted(requested_layers))
         if str(getattr(self.video_expert, "video_attention_mask_mode", "")) != "first_frame_causal":
             raise ValueError(
                 "`infer_action` requires `video_attention_mask_mode='first_frame_causal'`."
@@ -1156,6 +1195,7 @@ class FastWAM(torch.nn.Module):
                 video_cache_k=video_cache_k,
                 video_cache_v=video_cache_v,
                 action_attention_mask=action_attention_mask,
+                disabled_video_layers=disabled_video_layers_tuple,
             )
             pred_action = pred_action_posi
 

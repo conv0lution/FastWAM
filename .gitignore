@@ -238,6 +238,23 @@ manifest.json
 *models--t5*
 
 !data/fastwam_model_hf_release/libero_uncond_2cam224.pt
+
+# ASRE video K/V diagnosis
+# Keep the small, reviewable aggregate results; ignore runtime artifacts such
+# as the state bank, per-sample replay outputs, rollout traces, and logs.
+asre_results/**
+!asre_results/
+!asre_results/result_summary_for_gpt.md
+!asre_results/aggregate/
+!asre_results/aggregate/summary.csv
+!asre_results/aggregate/paired_transitions.csv
+!asre_results/aggregate/task_success_delta.csv
+!asre_results/aggregate/plots/
+!asre_results/aggregate/plots/*.png
+
+# The repository-wide tests/ rule above would otherwise hide these new tests.
+!experiments/asre_diagnosis/tests/
+!experiments/asre_diagnosis/tests/*.py
 !data/fastwam_model_hf_release/robotwin_uncond_3cam_384.pt
 
 # OneLogger
