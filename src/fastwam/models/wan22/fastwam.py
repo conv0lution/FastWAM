@@ -210,16 +210,23 @@ class FastWAM(torch.nn.Module):
                 "Prompt encoding requires loaded text encoder/tokenizer. "
                 "Set `load_text_encoder=true` or provide precomputed `context/context_mask`."
             )
+        try:
+            text_encoder_device = next(self.text_encoder.parameters()).device
+        except StopIteration:
+            text_encoder_device = self.device
         ids, mask = self.tokenizer(prompt, return_mask=True, add_special_tokens=True)
-        ids = ids.to(self.device)
-        mask = mask.to(self.device, dtype=torch.bool)
+        ids = ids.to(text_encoder_device)
+        mask = mask.to(text_encoder_device, dtype=torch.bool)
         prompt_emb = self.text_encoder(ids, mask)
         # FIXME: original implementation's zero padding is visible in cross-attn.
         seq_lens = mask.gt(0).sum(dim=1).long()
         for i, v in enumerate(seq_lens):
             prompt_emb[i, v:] = 0
         mask = torch.ones_like(mask)
-        return prompt_emb.to(device=self.device), mask
+        return (
+            prompt_emb.to(device=self.device),
+            mask.to(device=self.device),
+        )
 
     def _append_proprio_to_context(
         self,

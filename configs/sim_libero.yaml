@@ -40,6 +40,7 @@ EVALUATION:
   # Optional external inputs
   dataset_stats_path: null
   device: cuda
+  text_encoder_device: null
 
 MULTIRUN:
   create_only: false

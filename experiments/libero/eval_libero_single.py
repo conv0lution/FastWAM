@@ -114,6 +114,50 @@ def _resolve_dataset_stats_path(cfg: DictConfig) -> Path:
     raise FileNotFoundError(msg)
 
 
+def _place_text_encoder(model: torch.nn.Module, device: Optional[str]) -> None:
+    if device is None:
+        return
+    text_encoder = getattr(model, "text_encoder", None)
+    if text_encoder is None:
+        raise ValueError(
+            "EVALUATION.text_encoder_device was set, but the model has no text encoder."
+        )
+
+    target = torch.device(str(device))
+    if target.type == "cuda":
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                f"Cannot place the text encoder on {target}: CUDA is unavailable."
+            )
+        device_index = 0 if target.index is None else target.index
+        if device_index >= torch.cuda.device_count():
+            raise RuntimeError(
+                f"Cannot place the text encoder on {target}: only "
+                f"{torch.cuda.device_count()} CUDA device(s) are visible."
+            )
+
+    text_encoder.to(target).eval()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    logging.info("Placed text encoder on %s", target)
+
+
+@torch.no_grad()
+def _get_cached_prompt_context(
+    model: torch.nn.Module,
+    prompt: str,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    cache = getattr(model, "_eval_prompt_context_cache", None)
+    if cache is None:
+        cache = {}
+        setattr(model, "_eval_prompt_context_cache", cache)
+    if prompt not in cache:
+        logging.info("Encoding and caching evaluation prompt: %s", prompt)
+        context, context_mask = model.encode_prompt(prompt)
+        cache[prompt] = (context.detach(), context_mask.detach())
+    return cache[prompt]
+
+
 def _load_model_checkpoint(model: torch.nn.Module, ckpt: str) -> None:
     model.load_checkpoint(ckpt)
     logging.info("Loaded checkpoint via model.load_checkpoint: %s", ckpt)
@@ -386,8 +430,11 @@ def _predict_action_chunk(
         dtype=model.torch_dtype,
     )
 
+    context, context_mask = _get_cached_prompt_context(model, prompt)
     infer_kwargs = {
-        "prompt": prompt,
+        "prompt": None,
+        "context": context,
+        "context_mask": context_mask,
         "input_image": image,
         "action_horizon": action_horizon,
         "negative_prompt": str(cfg.EVALUATION.get("negative_prompt", "")),
@@ -883,6 +930,7 @@ def eval_single_process(cfg: DictConfig):
     model = instantiate(cfg.model, model_dtype=model_dtype, device=model_device)
     _load_model_checkpoint(model, str(cfg.ckpt))
     model = model.to(model_device).eval()
+    _place_text_encoder(model, cfg.EVALUATION.get("text_encoder_device"))
 
     dataset_stats_path = _resolve_dataset_stats_path(cfg)
     dataset_stats = load_dataset_stats_from_json(str(dataset_stats_path))
