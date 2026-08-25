@@ -1,0 +1,9 @@
+condition,baseline_success_to_intervention_success,baseline_success_to_intervention_failure,baseline_failure_to_intervention_success,baseline_failure_to_intervention_failure,induced_failures,rescued_successes,discordant_pairs,mcnemar_exact_p_value,mcnemar_holm_p_value,paired_episodes
+baseline_round2,97,0,0,3,0,0,0,,,100
+keep_15_29,93,4,2,1,4,2,6,0.6875,0.6875,100
+keep_20_29,48,49,1,2,49,1,50,9.059419880941277e-14,2.717825964282383e-13,100
+keep_25_29,0,97,0,3,97,0,97,1.262177448353619e-29,8.835242138475332e-29,100
+keep_00_14,0,97,0,3,97,0,97,1.262177448353619e-29,8.835242138475332e-29,100
+keep_00_19,11,86,1,2,86,1,87,1.137373342260413e-24,4.549493369041652e-24,100
+keep_15_19,8,89,0,3,89,0,89,3.2311742677852644e-27,1.6155871338926322e-26,100
+keep_15_19_25_29,84,13,2,1,13,2,15,0.00738525390625,0.0147705078125,100

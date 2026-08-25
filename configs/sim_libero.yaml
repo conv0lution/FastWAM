@@ -42,19 +42,31 @@ EVALUATION:
   dataset_stats_path: null
   device: cuda
   text_encoder_device: null
+  prompt_context_cache_path: null
 
 ASRE_DIAGNOSIS:
   enabled: false
   mode: drop_video_kv
+  protocol: round1_drop_groups
+  enabled_video_retrieval_layers: null
   disabled_video_layers: []
   condition_name: baseline
   condition_index: null
   save_action_trace: true
   save_rollout_video: false
   state_bank_dir: null
+  valid_state_bank_manifest_path: null
   max_states_per_episode: 5
+  qc_max_abs_tolerance: 1.0e-6
+  executed_prefix_length: ${EVALUATION.replan_steps}
   offline_output_dir: null
   smoke_report_path: null
+  checkpoint_sha256: null
+  dataset_stats_sha256: null
+  state_bank_manifest_path: null
+  state_bank_manifest_sha256: null
+  valid_state_bank_manifest_sha256: null
+  prompt_context_cache_sha256: null
 
 MULTIRUN:
   create_only: false

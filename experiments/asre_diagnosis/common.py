@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import subprocess
 import tempfile
@@ -12,6 +13,10 @@ from typing import Any, Mapping, Optional, Sequence
 import torch
 
 
+ROUND1_PROTOCOL = "round1_drop_groups"
+ROUND2_PROTOCOL = "round2_keep_schedules"
+
+
 @dataclass(frozen=True)
 class DiagnosisCondition:
     name: str
@@ -21,6 +26,10 @@ class DiagnosisCondition:
         payload = asdict(self)
         payload["disabled_video_layers"] = list(self.disabled_video_layers)
         return payload
+
+    def enabled_video_retrieval_layers(self, num_layers: int) -> tuple[int, ...]:
+        disabled = set(self.disabled_video_layers)
+        return tuple(layer for layer in range(num_layers) if layer not in disabled)
 
 
 def build_conditions(num_layers: int) -> list[DiagnosisCondition]:
@@ -53,6 +62,33 @@ def build_conditions(num_layers: int) -> list[DiagnosisCondition]:
     return conditions
 
 
+def build_round2_conditions(num_layers: int) -> list[DiagnosisCondition]:
+    """Build the pre-registered ASRE Round-2 keep schedules for a 30-layer model."""
+    if num_layers != 30:
+        raise ValueError(
+            "ASRE Round 2 is pre-registered for exactly 30 action layers; "
+            f"the selected model exposes {num_layers}."
+        )
+
+    enabled_schedules = (
+        ("baseline_round2", tuple(range(0, 30))),
+        ("keep_15_29", tuple(range(15, 30))),
+        ("keep_20_29", tuple(range(20, 30))),
+        ("keep_25_29", tuple(range(25, 30))),
+        ("keep_00_14", tuple(range(0, 15))),
+        ("keep_00_19", tuple(range(0, 20))),
+        ("keep_15_19", tuple(range(15, 20))),
+        ("keep_15_19_25_29", tuple(range(15, 20)) + tuple(range(25, 30))),
+    )
+    return [
+        DiagnosisCondition(
+            name=name,
+            disabled_video_layers=enabled_to_disabled_layers(enabled, num_layers),
+        )
+        for name, enabled in enabled_schedules
+    ]
+
+
 def get_num_model_layers(model: torch.nn.Module) -> int:
     mot = getattr(model, "mot", None)
     num_layers = getattr(mot, "num_layers", None)
@@ -80,6 +116,39 @@ def validate_disabled_layers(
     return tuple(sorted(requested))
 
 
+def validate_enabled_layers(
+    enabled_video_retrieval_layers: Optional[Sequence[int]],
+    num_layers: int,
+) -> Optional[tuple[int, ...]]:
+    """Validate a human-facing keep schedule without treating null as keep-none."""
+    if enabled_video_retrieval_layers is None:
+        return None
+    requested = list(enabled_video_retrieval_layers)
+    if any(isinstance(layer, bool) or not isinstance(layer, int) for layer in requested):
+        raise TypeError(
+            "`enabled_video_retrieval_layers` must contain only integer layer indices."
+        )
+    if len(set(requested)) != len(requested):
+        raise ValueError("`enabled_video_retrieval_layers` must not contain duplicates.")
+    invalid = [layer for layer in requested if layer < 0 or layer >= num_layers]
+    if invalid:
+        raise ValueError(
+            f"Invalid enabled video retrieval layers {invalid}; valid range is "
+            f"[0, {num_layers - 1}]."
+        )
+    return tuple(sorted(requested))
+
+
+def enabled_to_disabled_layers(
+    enabled_video_retrieval_layers: Sequence[int],
+    num_layers: int,
+) -> tuple[int, ...]:
+    enabled = validate_enabled_layers(enabled_video_retrieval_layers, num_layers)
+    assert enabled is not None
+    enabled_set = set(enabled)
+    return tuple(layer for layer in range(num_layers) if layer not in enabled_set)
+
+
 def resolve_condition(diagnosis_cfg: Mapping[str, Any], num_layers: int) -> DiagnosisCondition:
     enabled = bool(diagnosis_cfg.get("enabled", False))
     mode = str(diagnosis_cfg.get("mode", "drop_video_kv"))
@@ -90,17 +159,85 @@ def resolve_condition(diagnosis_cfg: Mapping[str, Any], num_layers: int) -> Diag
         diagnosis_cfg.get("disabled_video_layers", ()),
         num_layers,
     )
+    enabled_layers = validate_enabled_layers(
+        diagnosis_cfg.get("enabled_video_retrieval_layers"),
+        num_layers,
+    )
+    compiled_disabled = (
+        None
+        if enabled_layers is None
+        else enabled_to_disabled_layers(enabled_layers, num_layers)
+    )
+    if compiled_disabled is not None and explicit and explicit != compiled_disabled:
+        raise ValueError(
+            "enabled_video_retrieval_layers and disabled_video_layers are not exact "
+            f"complements: enabled={list(enabled_layers)}, disabled={list(explicit)}."
+        )
+    if compiled_disabled is not None:
+        explicit = compiled_disabled
     if not enabled:
-        if explicit:
+        if explicit or enabled_layers is not None:
             raise ValueError(
-                "ASRE_DIAGNOSIS.enabled=false requires disabled_video_layers=[]; "
+                "ASRE_DIAGNOSIS.enabled=false requires both disabled_video_layers=[] "
+                "and enabled_video_retrieval_layers=null; "
                 "otherwise the requested intervention would be silently ignored."
             )
         return DiagnosisCondition("baseline", ())
 
+    protocol = str(diagnosis_cfg.get("protocol", ROUND1_PROTOCOL))
+    if protocol not in {ROUND1_PROTOCOL, ROUND2_PROTOCOL}:
+        raise ValueError(
+            f"Unsupported ASRE_DIAGNOSIS.protocol={protocol!r}; expected "
+            f"{ROUND1_PROTOCOL!r} or {ROUND2_PROTOCOL!r}."
+        )
+
+    if protocol == ROUND2_PROTOCOL:
+        conditions = build_round2_conditions(num_layers)
+        condition_index = diagnosis_cfg.get("condition_index")
+        if condition_index is not None:
+            condition_index = int(condition_index)
+            if condition_index < 0 or condition_index >= len(conditions):
+                raise ValueError(
+                    f"Round-2 condition_index must be in [0, {len(conditions) - 1}], "
+                    f"got {condition_index}."
+                )
+            selected = conditions[condition_index]
+        else:
+            condition_name = str(diagnosis_cfg.get("condition_name", ""))
+            by_name = {condition.name: condition for condition in conditions}
+            if condition_name not in by_name:
+                raise ValueError(
+                    f"Unknown ASRE Round-2 condition {condition_name!r}; expected one of "
+                    f"{list(by_name)}."
+                )
+            selected = by_name[condition_name]
+
+        selected_enabled = selected.enabled_video_retrieval_layers(num_layers)
+        if enabled_layers is None:
+            raise ValueError(
+                "ASRE Round-2 conditions require an explicit "
+                "enabled_video_retrieval_layers keep schedule."
+            )
+        if enabled_layers != selected_enabled:
+            raise ValueError(
+                f"Configured enabled layers {list(enabled_layers)} disagree with "
+                f"{selected.name}: {list(selected_enabled)}."
+            )
+        if explicit != selected.disabled_video_layers:
+            raise ValueError(
+                f"Configured disabled layers {list(explicit)} disagree with "
+                f"{selected.name}: {list(selected.disabled_video_layers)}."
+            )
+        return selected
+
     conditions = build_conditions(num_layers)
     condition_index = diagnosis_cfg.get("condition_index")
     if condition_index is not None:
+        if enabled_layers is not None:
+            raise ValueError(
+                "condition_index selects the Round-1 drop matrix and cannot be combined "
+                "with enabled_video_retrieval_layers."
+            )
         condition_index = int(condition_index)
         if condition_index < 0 or condition_index >= len(conditions):
             raise ValueError(
@@ -125,6 +262,28 @@ def resolve_condition(diagnosis_cfg: Mapping[str, Any], num_layers: int) -> Diag
             )
         return selected
     return DiagnosisCondition(condition_name, explicit)
+
+
+def sha256_file(path: Path, chunk_size: int = 8 * 1024 * 1024) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(chunk_size)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def sha256_json(payload: Any) -> str:
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def now_iso() -> str:
@@ -164,8 +323,18 @@ def build_run_metadata(
     num_inference_steps: int,
     replan_steps: int,
     start_timestamp: str,
+    condition_protocol: Optional[str] = None,
+    checkpoint_sha256: Optional[str] = None,
+    dataset_stats_sha256: Optional[str] = None,
+    state_bank_manifest_path: Optional[str] = None,
+    state_bank_manifest_sha256: Optional[str] = None,
+    valid_state_bank_manifest_path: Optional[str] = None,
+    valid_state_bank_manifest_sha256: Optional[str] = None,
+    prompt_context_cache_path: Optional[str] = None,
+    prompt_context_cache_sha256: Optional[str] = None,
+    config_sha256: Optional[str] = None,
 ) -> dict[str, Any]:
-    return {
+    metadata = {
         "git_commit_hash": git_commit(repo_root),
         "checkpoint_path": str(
             Path(os.path.expanduser(os.path.expandvars(checkpoint))).resolve()
@@ -173,6 +342,10 @@ def build_run_metadata(
         "checkpoint_name": Path(checkpoint).name,
         "dataset_stats_path": dataset_stats_path,
         "diagnosis_condition": condition.name,
+        "condition_protocol": condition_protocol,
+        "enabled_video_retrieval_layers": list(
+            condition.enabled_video_retrieval_layers(num_layers)
+        ),
         "disabled_video_layers": list(condition.disabled_video_layers),
         "num_model_layers": int(num_layers),
         "task_suite": task_suite,
@@ -188,6 +361,19 @@ def build_run_metadata(
         "start_timestamp": start_timestamp,
         "end_timestamp": None,
     }
+    optional_fields = {
+        "checkpoint_sha256": checkpoint_sha256,
+        "dataset_stats_sha256": dataset_stats_sha256,
+        "state_bank_manifest_path": state_bank_manifest_path,
+        "state_bank_manifest_sha256": state_bank_manifest_sha256,
+        "valid_state_bank_manifest_path": valid_state_bank_manifest_path,
+        "valid_state_bank_manifest_sha256": valid_state_bank_manifest_sha256,
+        "prompt_context_cache_path": prompt_context_cache_path,
+        "prompt_context_cache_sha256": prompt_context_cache_sha256,
+        "config_sha256": config_sha256,
+    }
+    metadata.update({key: value for key, value in optional_fields.items() if value is not None})
+    return metadata
 
 
 def atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:

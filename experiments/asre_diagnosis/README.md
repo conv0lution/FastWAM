@@ -4,6 +4,10 @@ This directory implements the training-free diagnosis described in the experimen
 
 All commands below assume the repository root as the working directory and the Fast-WAM environment (including the external LIBERO package) is active.
 
+This document describes the original Round-1 necessity experiment. The
+fixed Round-2 sufficiency protocol and its one-condition-per-GPU commands are
+documented in [`round2/README.md`](round2/README.md).
+
 To execute the complete guarded pipeline with the checkpoint paths configured
 for this host, run:
 

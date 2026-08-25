@@ -1,0 +1,119 @@
+{
+  "candidate_action_sufficient_schedules": [
+    "keep_15_29"
+  ],
+  "candidate_flags": {
+    "keep_00_14": false,
+    "keep_00_19": false,
+    "keep_15_19": false,
+    "keep_15_19_25_29": false,
+    "keep_15_29": true,
+    "keep_20_29": false,
+    "keep_25_29": false
+  },
+  "catastrophic_task_ids": {
+    "keep_00_14": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9
+    ],
+    "keep_00_19": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      6,
+      7,
+      8,
+      9
+    ],
+    "keep_15_19": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      6,
+      7,
+      8,
+      9
+    ],
+    "keep_15_19_25_29": [],
+    "keep_15_29": [],
+    "keep_20_29": [
+      1,
+      4,
+      5,
+      7,
+      9
+    ],
+    "keep_25_29": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9
+    ]
+  },
+  "joint_round1_round2_table": "round1_round2_joint_summary.csv",
+  "language_guardrail": "Positive deltas are treated as no detected loss, not as evidence of improvement.",
+  "overall_status": "pattern_flags_detected",
+  "pattern_flags": {
+    "A_late_half_candidate": true,
+    "B_early_only_strongly_degraded": true,
+    "C_critical_windows_complementary_candidate": false,
+    "D_final_five_candidate": false,
+    "E_all_keep_schedules_strongly_degraded": false
+  },
+  "round1_round2_baseline_reproduction": {
+    "aggregate_success_rate_exact_match": true,
+    "round1_baseline_success_rate": 0.97,
+    "round2_baseline_success_rate": 0.97,
+    "round2_minus_round1_success_rate": 0.0,
+    "scope_note": "This checks aggregate success-rate reproducibility; the Round-1 summary alone does not establish episode-level outcome identity."
+  },
+  "screening_not_formal_non_inferiority": true,
+  "success_losses": {
+    "baseline_round2": -0.0,
+    "keep_00_14": 0.97,
+    "keep_00_19": 0.85,
+    "keep_15_19": 0.89,
+    "keep_15_19_25_29": 0.10999999999999999,
+    "keep_15_29": 0.020000000000000018,
+    "keep_20_29": 0.48,
+    "keep_25_29": 0.97
+  },
+  "supported_interpretations": [
+    {
+      "interpretation": "Early direct visual retrieval is jointly dispensable in this LIBERO-Spatial screening run when later retrieval remains available.",
+      "pattern": "A_late_half_candidate"
+    },
+    {
+      "interpretation": "Visual information acquired only early in the action stream is insufficient here; later direct visual re-grounding is required.",
+      "pattern": "B_early_only_strongly_degraded"
+    }
+  ],
+  "supported_pattern_flags": [
+    "A_late_half_candidate",
+    "B_early_only_strongly_degraded"
+  ],
+  "thresholds": {
+    "candidate_max_success_loss": 0.05,
+    "catastrophic_task_baseline_rate": 0.8,
+    "catastrophic_task_delta": -0.5,
+    "strong_degradation_success_loss": 0.2
+  }
+}

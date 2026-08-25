@@ -35,12 +35,17 @@ from experiments.libero.libero_utils import (
     save_rollout_video,
 )
 from experiments.libero.worker_pool import pop_task, write_worker_status
+from experiments.libero.prompt_context_cache import (
+    get_cached_prompt_context as _get_cached_prompt_context,
+    load_prompt_context_cache as _load_prompt_context_cache,
+)
 from experiments.asre_diagnosis.common import (
     atomic_write_json,
     build_run_metadata,
     get_num_model_layers,
     now_iso,
     resolve_condition,
+    sha256_json,
 )
 from fastwam.datasets.lerobot.processors.fastwam_processor import FastWAMProcessor
 from fastwam.datasets.lerobot.utils.normalizer import load_dataset_stats_from_json
@@ -163,22 +168,6 @@ def _place_text_encoder(model: torch.nn.Module, device: Optional[str]) -> None:
             )
         except RuntimeError as exc:
             logging.warning("Could not query CUDA memory for cuda:%d: %s", device_index, exc)
-
-
-@torch.no_grad()
-def _get_cached_prompt_context(
-    model: torch.nn.Module,
-    prompt: str,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    cache = getattr(model, "_eval_prompt_context_cache", None)
-    if cache is None:
-        cache = {}
-        setattr(model, "_eval_prompt_context_cache", cache)
-    if prompt not in cache:
-        logging.info("Encoding and caching evaluation prompt: %s", prompt)
-        context, context_mask = model.encode_prompt(prompt)
-        cache[prompt] = (context.detach(), context_mask.detach())
-    return cache[prompt]
 
 
 def _load_model_checkpoint(model: torch.nn.Module, ckpt: str) -> None:
@@ -955,6 +944,11 @@ def _run_task_to_file(
         results.update(
             {
                 "diagnosis_condition": str(diagnosis_cfg.get("condition_name", "baseline")),
+                "condition_protocol": str(diagnosis_cfg.get("protocol", "round1_drop_groups")),
+                "enabled_video_retrieval_layers": [
+                    int(layer)
+                    for layer in diagnosis_cfg.get("enabled_video_retrieval_layers", ())
+                ],
                 "disabled_video_layers": [
                     int(layer) for layer in diagnosis_cfg.get("disabled_video_layers", ())
                 ],
@@ -1081,6 +1075,18 @@ def eval_single_process(cfg: DictConfig):
 
     model_device = _resolve_eval_device(cfg)
     model_dtype = _mixed_precision_to_model_dtype(cfg.get("mixed_precision", "bf16"))
+    prompt_context_cache_value = cfg.EVALUATION.get("prompt_context_cache_path")
+    prompt_context_cache_path = None
+    if prompt_context_cache_value is not None:
+        prompt_context_cache_path = Path(
+            os.path.expanduser(os.path.expandvars(str(prompt_context_cache_value)))
+        ).resolve()
+        if not prompt_context_cache_path.is_file():
+            raise FileNotFoundError(
+                f"Prompt-context cache is unavailable: {prompt_context_cache_path}"
+            )
+        cfg.model.load_text_encoder = False
+        cfg.EVALUATION.text_encoder_device = None
     model = instantiate(
         cfg.model,
         model_dtype=model_dtype,
@@ -1090,11 +1096,16 @@ def eval_single_process(cfg: DictConfig):
     _load_model_checkpoint(model, str(cfg.ckpt))
     model = model.to(model_device).eval()
     _place_text_encoder(model, cfg.EVALUATION.get("text_encoder_device"))
+    if prompt_context_cache_path is not None:
+        _load_prompt_context_cache(model, prompt_context_cache_path)
 
     num_model_layers = get_num_model_layers(model)
     diagnosis_cfg = cfg.get("ASRE_DIAGNOSIS", {})
     condition = resolve_condition(diagnosis_cfg, num_model_layers)
     cfg.ASRE_DIAGNOSIS.condition_name = condition.name
+    cfg.ASRE_DIAGNOSIS.enabled_video_retrieval_layers = list(
+        condition.enabled_video_retrieval_layers(num_model_layers)
+    )
     cfg.ASRE_DIAGNOSIS.disabled_video_layers = list(condition.disabled_video_layers)
 
     dataset_stats_path = _resolve_dataset_stats_path(cfg)
@@ -1154,9 +1165,56 @@ def eval_single_process(cfg: DictConfig):
             num_inference_steps=num_inference_steps,
             replan_steps=int(cfg.EVALUATION.get("replan_steps", 5)),
             start_timestamp=run_start_timestamp,
+            condition_protocol=str(
+                cfg.ASRE_DIAGNOSIS.get("protocol", "round1_drop_groups")
+            ),
+            checkpoint_sha256=cfg.ASRE_DIAGNOSIS.get("checkpoint_sha256"),
+            dataset_stats_sha256=cfg.ASRE_DIAGNOSIS.get("dataset_stats_sha256"),
+            state_bank_manifest_path=cfg.ASRE_DIAGNOSIS.get("state_bank_manifest_path"),
+            state_bank_manifest_sha256=cfg.ASRE_DIAGNOSIS.get(
+                "state_bank_manifest_sha256"
+            ),
+            valid_state_bank_manifest_path=cfg.ASRE_DIAGNOSIS.get(
+                "valid_state_bank_manifest_path"
+            ),
+            valid_state_bank_manifest_sha256=cfg.ASRE_DIAGNOSIS.get(
+                "valid_state_bank_manifest_sha256"
+            ),
+            prompt_context_cache_path=(
+                None if prompt_context_cache_path is None else str(prompt_context_cache_path)
+            ),
+            prompt_context_cache_sha256=cfg.ASRE_DIAGNOSIS.get(
+                "prompt_context_cache_sha256"
+            ),
+            config_sha256=sha256_json(OmegaConf.to_container(cfg, resolve=True)),
         )
         run_metadata.update(
             {
+                "status": "running",
+                "condition_config": {
+                    "mode": str(cfg.ASRE_DIAGNOSIS.get("mode", "drop_video_kv")),
+                    "protocol": str(
+                        cfg.ASRE_DIAGNOSIS.get("protocol", "round1_drop_groups")
+                    ),
+                    "condition_name": condition.name,
+                    "enabled_video_retrieval_layers": list(
+                        condition.enabled_video_retrieval_layers(num_model_layers)
+                    ),
+                    "disabled_video_layers": list(condition.disabled_video_layers),
+                },
+                "text_conditioning_source": (
+                    "round1_state_bank_prompt_context_cache"
+                    if prompt_context_cache_path is not None
+                    else "model_text_encoder"
+                ),
+                "prompt_template": DEFAULT_PROMPT,
+                "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
+                "mujoco_egl_device_id": os.environ.get("MUJOCO_EGL_DEVICE_ID"),
+                "environment_seed": None if cfg.get("seed") is None else int(cfg.seed),
+                "action_inference_seed": None
+                if cfg.get("seed") is None
+                else int(cfg.seed),
+                "action_noise_seed": None if cfg.get("seed") is None else int(cfg.seed),
                 "compile_action_infer": bool(cfg.EVALUATION.get("compile_action_infer", False)),
                 "binarize_gripper": bool(cfg.EVALUATION.get("binarize_gripper", False)),
                 "sigma_shift": (
@@ -1170,7 +1228,7 @@ def eval_single_process(cfg: DictConfig):
         if metadata_path.exists():
             with metadata_path.open("r", encoding="utf-8") as handle:
                 existing_metadata = json.load(handle)
-            resume_keys = (
+            resume_keys = [
                 "checkpoint_path",
                 "dataset_stats_path",
                 "diagnosis_condition",
@@ -1187,7 +1245,25 @@ def eval_single_process(cfg: DictConfig):
                 "binarize_gripper",
                 "sigma_shift",
                 "rand_device",
-            )
+            ]
+            if str(cfg.ASRE_DIAGNOSIS.get("protocol")) == "round2_keep_schedules":
+                resume_keys.extend(
+                    [
+                        "condition_protocol",
+                        "enabled_video_retrieval_layers",
+                        "git_commit_hash",
+                        "checkpoint_sha256",
+                        "dataset_stats_sha256",
+                        "state_bank_manifest_sha256",
+                        "valid_state_bank_manifest_sha256",
+                        "prompt_context_cache_sha256",
+                        "config_sha256",
+                        "text_conditioning_source",
+                        "prompt_template",
+                        "torch_version",
+                        "cuda_version",
+                    ]
+                )
             mismatches = {
                 key: {"existing": existing_metadata.get(key), "requested": run_metadata.get(key)}
                 for key in resume_keys
@@ -1218,6 +1294,7 @@ def eval_single_process(cfg: DictConfig):
         )
         if run_metadata is not None:
             run_metadata["end_timestamp"] = now_iso()
+            run_metadata["status"] = "completed"
             atomic_write_json(metadata_path, run_metadata)
         return None
 
@@ -1261,6 +1338,7 @@ def eval_single_process(cfg: DictConfig):
 
     if run_metadata is not None:
         run_metadata["end_timestamp"] = now_iso()
+        run_metadata["status"] = "completed"
         atomic_write_json(metadata_path, run_metadata)
     return all_results[0] if len(all_results) == 1 else all_results
 

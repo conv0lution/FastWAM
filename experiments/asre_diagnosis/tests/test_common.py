@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import unittest
 
-from experiments.asre_diagnosis.common import build_conditions, resolve_condition
+from experiments.asre_diagnosis.common import (
+    build_conditions,
+    build_round2_conditions,
+    enabled_to_disabled_layers,
+    resolve_condition,
+)
 
 
 class ConditionsTest(unittest.TestCase):
@@ -52,6 +57,47 @@ class ConditionsTest(unittest.TestCase):
                 },
                 num_layers=30,
             )
+
+    def test_round2_conditions_match_pre_registered_keep_schedules(self) -> None:
+        conditions = build_round2_conditions(30)
+        self.assertEqual(
+            [condition.name for condition in conditions],
+            [
+                "baseline_round2",
+                "keep_15_29",
+                "keep_20_29",
+                "keep_25_29",
+                "keep_00_14",
+                "keep_00_19",
+                "keep_15_19",
+                "keep_15_19_25_29",
+            ],
+        )
+        self.assertEqual(conditions[1].disabled_video_layers, tuple(range(15)))
+        self.assertEqual(
+            conditions[-1].enabled_video_retrieval_layers(30),
+            tuple(range(15, 20)) + tuple(range(25, 30)),
+        )
+
+    def test_round2_rejects_wrong_named_schedule(self) -> None:
+        with self.assertRaises(ValueError):
+            resolve_condition(
+                {
+                    "enabled": True,
+                    "mode": "drop_video_kv",
+                    "protocol": "round2_keep_schedules",
+                    "condition_name": "keep_15_29",
+                    "enabled_video_retrieval_layers": list(range(20, 30)),
+                    "disabled_video_layers": [],
+                },
+                num_layers=30,
+            )
+
+    def test_enabled_schedule_compiles_to_exact_complement(self) -> None:
+        self.assertEqual(
+            enabled_to_disabled_layers([1, 3], 5),
+            (0, 2, 4),
+        )
 
 
 if __name__ == "__main__":

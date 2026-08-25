@@ -252,6 +252,17 @@ asre_results/**
 !asre_results/aggregate/plots/
 !asre_results/aggregate/plots/*.png
 
+# Round-2 raw rollouts, state replay, prompt caches, and logs stay local. Keep
+# only the compact aggregate tables, diagnostics, provenance, and figures.
+!asre_results/round2/
+asre_results/round2/**
+!asre_results/round2/aggregate/
+!asre_results/round2/aggregate/*.csv
+!asre_results/round2/aggregate/*.json
+!asre_results/round2/aggregate/*.md
+!asre_results/round2/aggregate/plots/
+!asre_results/round2/aggregate/plots/*.png
+
 # The repository-wide tests/ rule above would otherwise hide these new tests.
 !experiments/asre_diagnosis/tests/
 !experiments/asre_diagnosis/tests/*.py

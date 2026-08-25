@@ -1,0 +1,81 @@
+condition,task_id,task_description,successes,total_episodes,success_rate,baseline_success_rate,delta_success_rate,induced_failures,rescued_successes
+baseline_round2,0,pick up the black bowl between the plate and the ramekin and place it on the plate,10,10,1.0,1.0,0.0,0,0
+keep_15_29,0,pick up the black bowl between the plate and the ramekin and place it on the plate,10,10,1.0,1.0,0.0,0,0
+keep_20_29,0,pick up the black bowl between the plate and the ramekin and place it on the plate,10,10,1.0,1.0,0.0,0,0
+keep_25_29,0,pick up the black bowl between the plate and the ramekin and place it on the plate,0,10,0.0,1.0,-1.0,10,0
+keep_00_14,0,pick up the black bowl between the plate and the ramekin and place it on the plate,0,10,0.0,1.0,-1.0,10,0
+keep_00_19,0,pick up the black bowl between the plate and the ramekin and place it on the plate,1,10,0.1,1.0,-0.9,9,0
+keep_15_19,0,pick up the black bowl between the plate and the ramekin and place it on the plate,1,10,0.1,1.0,-0.9,9,0
+keep_15_19_25_29,0,pick up the black bowl between the plate and the ramekin and place it on the plate,9,10,0.9,1.0,-0.09999999999999998,1,0
+baseline_round2,1,pick up the black bowl next to the ramekin and place it on the plate,10,10,1.0,1.0,0.0,0,0
+keep_15_29,1,pick up the black bowl next to the ramekin and place it on the plate,8,10,0.8,1.0,-0.19999999999999996,2,0
+keep_20_29,1,pick up the black bowl next to the ramekin and place it on the plate,2,10,0.2,1.0,-0.8,8,0
+keep_25_29,1,pick up the black bowl next to the ramekin and place it on the plate,0,10,0.0,1.0,-1.0,10,0
+keep_00_14,1,pick up the black bowl next to the ramekin and place it on the plate,0,10,0.0,1.0,-1.0,10,0
+keep_00_19,1,pick up the black bowl next to the ramekin and place it on the plate,0,10,0.0,1.0,-1.0,10,0
+keep_15_19,1,pick up the black bowl next to the ramekin and place it on the plate,0,10,0.0,1.0,-1.0,10,0
+keep_15_19_25_29,1,pick up the black bowl next to the ramekin and place it on the plate,9,10,0.9,1.0,-0.09999999999999998,1,0
+baseline_round2,2,pick up the black bowl from table center and place it on the plate,10,10,1.0,1.0,0.0,0,0
+keep_15_29,2,pick up the black bowl from table center and place it on the plate,10,10,1.0,1.0,0.0,0,0
+keep_20_29,2,pick up the black bowl from table center and place it on the plate,7,10,0.7,1.0,-0.30000000000000004,3,0
+keep_25_29,2,pick up the black bowl from table center and place it on the plate,0,10,0.0,1.0,-1.0,10,0
+keep_00_14,2,pick up the black bowl from table center and place it on the plate,0,10,0.0,1.0,-1.0,10,0
+keep_00_19,2,pick up the black bowl from table center and place it on the plate,0,10,0.0,1.0,-1.0,10,0
+keep_15_19,2,pick up the black bowl from table center and place it on the plate,0,10,0.0,1.0,-1.0,10,0
+keep_15_19_25_29,2,pick up the black bowl from table center and place it on the plate,10,10,1.0,1.0,0.0,0,0
+baseline_round2,3,pick up the black bowl on the cookie box and place it on the plate,10,10,1.0,1.0,0.0,0,0
+keep_15_29,3,pick up the black bowl on the cookie box and place it on the plate,10,10,1.0,1.0,0.0,0,0
+keep_20_29,3,pick up the black bowl on the cookie box and place it on the plate,7,10,0.7,1.0,-0.30000000000000004,3,0
+keep_25_29,3,pick up the black bowl on the cookie box and place it on the plate,0,10,0.0,1.0,-1.0,10,0
+keep_00_14,3,pick up the black bowl on the cookie box and place it on the plate,0,10,0.0,1.0,-1.0,10,0
+keep_00_19,3,pick up the black bowl on the cookie box and place it on the plate,2,10,0.2,1.0,-0.8,8,0
+keep_15_19,3,pick up the black bowl on the cookie box and place it on the plate,2,10,0.2,1.0,-0.8,8,0
+keep_15_19_25_29,3,pick up the black bowl on the cookie box and place it on the plate,10,10,1.0,1.0,0.0,0,0
+baseline_round2,4,pick up the black bowl in the top drawer of the wooden cabinet and place it on the plate,10,10,1.0,1.0,0.0,0,0
+keep_15_29,4,pick up the black bowl in the top drawer of the wooden cabinet and place it on the plate,10,10,1.0,1.0,0.0,0,0
+keep_20_29,4,pick up the black bowl in the top drawer of the wooden cabinet and place it on the plate,5,10,0.5,1.0,-0.5,5,0
+keep_25_29,4,pick up the black bowl in the top drawer of the wooden cabinet and place it on the plate,0,10,0.0,1.0,-1.0,10,0
+keep_00_14,4,pick up the black bowl in the top drawer of the wooden cabinet and place it on the plate,0,10,0.0,1.0,-1.0,10,0
+keep_00_19,4,pick up the black bowl in the top drawer of the wooden cabinet and place it on the plate,0,10,0.0,1.0,-1.0,10,0
+keep_15_19,4,pick up the black bowl in the top drawer of the wooden cabinet and place it on the plate,0,10,0.0,1.0,-1.0,10,0
+keep_15_19_25_29,4,pick up the black bowl in the top drawer of the wooden cabinet and place it on the plate,6,10,0.6,1.0,-0.4,4,0
+baseline_round2,5,pick up the black bowl on the ramekin and place it on the plate,8,10,0.8,0.8,0.0,0,0
+keep_15_29,5,pick up the black bowl on the ramekin and place it on the plate,9,10,0.9,0.8,0.09999999999999998,1,2
+keep_20_29,5,pick up the black bowl on the ramekin and place it on the plate,1,10,0.1,0.8,-0.7000000000000001,8,1
+keep_25_29,5,pick up the black bowl on the ramekin and place it on the plate,0,10,0.0,0.8,-0.8,8,0
+keep_00_14,5,pick up the black bowl on the ramekin and place it on the plate,0,10,0.0,0.8,-0.8,8,0
+keep_00_19,5,pick up the black bowl on the ramekin and place it on the plate,7,10,0.7,0.8,-0.10000000000000009,2,1
+keep_15_19,5,pick up the black bowl on the ramekin and place it on the plate,5,10,0.5,0.8,-0.30000000000000004,3,0
+keep_15_19_25_29,5,pick up the black bowl on the ramekin and place it on the plate,8,10,0.8,0.8,0.0,2,2
+baseline_round2,6,pick up the black bowl next to the cookie box and place it on the plate,10,10,1.0,1.0,0.0,0,0
+keep_15_29,6,pick up the black bowl next to the cookie box and place it on the plate,10,10,1.0,1.0,0.0,0,0
+keep_20_29,6,pick up the black bowl next to the cookie box and place it on the plate,8,10,0.8,1.0,-0.19999999999999996,2,0
+keep_25_29,6,pick up the black bowl next to the cookie box and place it on the plate,0,10,0.0,1.0,-1.0,10,0
+keep_00_14,6,pick up the black bowl next to the cookie box and place it on the plate,0,10,0.0,1.0,-1.0,10,0
+keep_00_19,6,pick up the black bowl next to the cookie box and place it on the plate,0,10,0.0,1.0,-1.0,10,0
+keep_15_19,6,pick up the black bowl next to the cookie box and place it on the plate,0,10,0.0,1.0,-1.0,10,0
+keep_15_19_25_29,6,pick up the black bowl next to the cookie box and place it on the plate,10,10,1.0,1.0,0.0,0,0
+baseline_round2,7,pick up the black bowl on the stove and place it on the plate,10,10,1.0,1.0,0.0,0,0
+keep_15_29,7,pick up the black bowl on the stove and place it on the plate,10,10,1.0,1.0,0.0,0,0
+keep_20_29,7,pick up the black bowl on the stove and place it on the plate,1,10,0.1,1.0,-0.9,9,0
+keep_25_29,7,pick up the black bowl on the stove and place it on the plate,0,10,0.0,1.0,-1.0,10,0
+keep_00_14,7,pick up the black bowl on the stove and place it on the plate,0,10,0.0,1.0,-1.0,10,0
+keep_00_19,7,pick up the black bowl on the stove and place it on the plate,0,10,0.0,1.0,-1.0,10,0
+keep_15_19,7,pick up the black bowl on the stove and place it on the plate,0,10,0.0,1.0,-1.0,10,0
+keep_15_19_25_29,7,pick up the black bowl on the stove and place it on the plate,9,10,0.9,1.0,-0.09999999999999998,1,0
+baseline_round2,8,pick up the black bowl next to the plate and place it on the plate,9,10,0.9,0.9,0.0,0,0
+keep_15_29,8,pick up the black bowl next to the plate and place it on the plate,9,10,0.9,0.9,0.0,0,0
+keep_20_29,8,pick up the black bowl next to the plate and place it on the plate,5,10,0.5,0.9,-0.4,4,0
+keep_25_29,8,pick up the black bowl next to the plate and place it on the plate,0,10,0.0,0.9,-0.9,9,0
+keep_00_14,8,pick up the black bowl next to the plate and place it on the plate,0,10,0.0,0.9,-0.9,9,0
+keep_00_19,8,pick up the black bowl next to the plate and place it on the plate,2,10,0.2,0.9,-0.7,7,0
+keep_15_19,8,pick up the black bowl next to the plate and place it on the plate,0,10,0.0,0.9,-0.9,9,0
+keep_15_19_25_29,8,pick up the black bowl next to the plate and place it on the plate,7,10,0.7,0.9,-0.20000000000000007,2,0
+baseline_round2,9,pick up the black bowl on the wooden cabinet and place it on the plate,10,10,1.0,1.0,0.0,0,0
+keep_15_29,9,pick up the black bowl on the wooden cabinet and place it on the plate,9,10,0.9,1.0,-0.09999999999999998,1,0
+keep_20_29,9,pick up the black bowl on the wooden cabinet and place it on the plate,3,10,0.3,1.0,-0.7,7,0
+keep_25_29,9,pick up the black bowl on the wooden cabinet and place it on the plate,0,10,0.0,1.0,-1.0,10,0
+keep_00_14,9,pick up the black bowl on the wooden cabinet and place it on the plate,0,10,0.0,1.0,-1.0,10,0
+keep_00_19,9,pick up the black bowl on the wooden cabinet and place it on the plate,0,10,0.0,1.0,-1.0,10,0
+keep_15_19,9,pick up the black bowl on the wooden cabinet and place it on the plate,0,10,0.0,1.0,-1.0,10,0
+keep_15_19_25_29,9,pick up the black bowl on the wooden cabinet and place it on the plate,8,10,0.8,1.0,-0.19999999999999996,2,0
