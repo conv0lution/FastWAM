@@ -1,0 +1,30 @@
+{
+  "analysis_git_commit_hash": "92e842c79f5209b31c2653944cc0c1719e95eb9e",
+  "artifact_type": "asre_round3a_factorial_aggregate_metadata",
+  "bootstrap_samples": 10000,
+  "bootstrap_seed": 0,
+  "created_at": "2026-08-26T10:46:06+08:00",
+  "output_files": [
+    "aggregate_metadata.json",
+    "factorial_cells.csv",
+    "factorial_cells.json",
+    "factorial_interactions.csv",
+    "factorial_offline_metrics.csv",
+    "factorial_paired_transitions.csv",
+    "factorial_replan_stage_metrics.csv",
+    "factorial_simple_effects.csv",
+    "factorial_summary.json",
+    "factorial_summary.md",
+    "factorial_task_success.csv"
+  ],
+  "round2_offline_root": "/home/zhaizicheng/Reasoning/FastWAM/asre_results/round2/offline",
+  "round2_online_root": "/home/zhaizicheng/Reasoning/FastWAM/asre_results/round2/online_full",
+  "round3a_offline_root": "/home/zhaizicheng/Reasoning/FastWAM/asre_results/round3a/offline",
+  "round3a_online_root": "/home/zhaizicheng/Reasoning/FastWAM/asre_results/round3a/online_full",
+  "schema_version": 1,
+  "sign_flip_samples": 100000,
+  "sign_flip_seed": 0,
+  "status": "complete",
+  "valid_state_bank_manifest_path": "/home/zhaizicheng/Reasoning/FastWAM/asre_results/round2/state_bank_valid_manifest.json",
+  "valid_state_bank_manifest_sha256": "a05ebb6b50d64eb022103269a0eef595e749fe8c16e49e996ba08669f44378cd"
+}

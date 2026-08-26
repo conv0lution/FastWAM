@@ -1,0 +1,13 @@
+effect_id,factor,context_A,context_B,context_C,reference_cell,target_cell,reference_success_to_target_success,reference_success_to_target_failure,reference_failure_to_target_success,reference_failure_to_target_failure,induced_failures,rescued_successes,discordant_pairs,mcnemar_exact_p_value,multiplicity_note,paired_episodes
+simple_A_B0_C0,A,,0,0,000,100,0,0,8,92,0,8,8,0.0078125,descriptive simple-effect p; not in seven-contrast Holm family,100
+simple_A_B1_C0,A,,1,0,010,110,0,0,61,39,0,61,61,8.673617379884035e-19,descriptive simple-effect p; not in seven-contrast Holm family,100
+simple_A_B0_C1,A,,0,1,001,101,0,0,86,14,0,86,86,2.5849394142282115e-26,descriptive simple-effect p; not in seven-contrast Holm family,100
+simple_A_B1_C1,A,,1,1,011,111,48,1,47,4,1,47,48,3.481659405224491e-13,descriptive simple-effect p; not in seven-contrast Holm family,100
+simple_B_A0_C0,B,0,,0,000,010,0,0,0,100,0,0,0,1.0,descriptive simple-effect p; not in seven-contrast Holm family,100
+simple_B_A1_C0,B,1,,0,100,110,7,1,54,38,1,54,55,3.1086244689504383e-15,descriptive simple-effect p; not in seven-contrast Holm family,100
+simple_B_A0_C1,B,0,,1,001,011,0,0,49,51,0,49,49,3.552713678800501e-15,descriptive simple-effect p; not in seven-contrast Holm family,100
+simple_B_A1_C1,B,1,,1,101,111,83,3,12,2,3,12,15,0.03515625,descriptive simple-effect p; not in seven-contrast Holm family,100
+simple_C_A0_B0,C,0,0,,000,001,0,0,0,100,0,0,0,1.0,descriptive simple-effect p; not in seven-contrast Holm family,100
+simple_C_A1_B0,C,1,0,,100,101,6,2,80,12,2,80,82,1.4078614025652531e-21,descriptive simple-effect p; not in seven-contrast Holm family,100
+simple_C_A0_B1,C,0,1,,010,011,0,0,49,51,0,49,49,3.552713678800501e-15,descriptive simple-effect p; not in seven-contrast Holm family,100
+simple_C_A1_B1,C,1,1,,110,111,57,4,38,1,4,38,42,5.65314621780999e-08,descriptive simple-effect p; not in seven-contrast Holm family,100

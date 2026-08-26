@@ -263,16 +263,31 @@ asre_results/round2/**
 !asre_results/round2/aggregate/plots/
 !asre_results/round2/aggregate/plots/*.png
 
-# Round-3A keeps the three new raw condition runs local and publishes only the
-# compact unified 2^3 factorial tables, summaries, and figures.
+# Round-3A keeps the three new raw condition runs local and publishes an
+# explicit allowlist of compact unified 2^3 factorial tables, summaries,
+# provenance, and figures. Keep this list explicit so ad-hoc/debug aggregate
+# files do not become commit candidates automatically.
 !asre_results/round3a/
 asre_results/round3a/**
 !asre_results/round3a/aggregate/
-!asre_results/round3a/aggregate/*.csv
-!asre_results/round3a/aggregate/*.json
-!asre_results/round3a/aggregate/*.md
+!asre_results/round3a/aggregate/aggregate_metadata.json
+!asre_results/round3a/aggregate/factorial_cells.csv
+!asre_results/round3a/aggregate/factorial_cells.json
+!asre_results/round3a/aggregate/factorial_interactions.csv
+!asre_results/round3a/aggregate/factorial_offline_metrics.csv
+!asre_results/round3a/aggregate/factorial_paired_transitions.csv
+!asre_results/round3a/aggregate/factorial_replan_stage_metrics.csv
+!asre_results/round3a/aggregate/factorial_simple_effects.csv
+!asre_results/round3a/aggregate/factorial_summary.json
+!asre_results/round3a/aggregate/factorial_summary.md
+!asre_results/round3a/aggregate/factorial_task_success.csv
+!asre_results/round3a/aggregate/result_summary_for_gpt.md
 !asre_results/round3a/aggregate/plots/
-!asre_results/round3a/aggregate/plots/*.png
+!asre_results/round3a/aggregate/plots/figure_A_complete_factorial_cell_plot.png
+!asre_results/round3a/aggregate/plots/figure_B_contextual_contribution_of_B.png
+!asre_results/round3a/aggregate/plots/figure_C_pairwise_interaction_summary.png
+!asre_results/round3a/aggregate/plots/figure_D_retrieval_schedule_schematic.png
+!asre_results/round3a/aggregate/plots/figure_E_task_level_factorial_heatmap.png
 
 # The repository-wide tests/ rule above would otherwise hide these new tests.
 !experiments/asre_diagnosis/tests/
