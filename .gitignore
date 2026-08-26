@@ -263,6 +263,17 @@ asre_results/round2/**
 !asre_results/round2/aggregate/plots/
 !asre_results/round2/aggregate/plots/*.png
 
+# Round-3A keeps the three new raw condition runs local and publishes only the
+# compact unified 2^3 factorial tables, summaries, and figures.
+!asre_results/round3a/
+asre_results/round3a/**
+!asre_results/round3a/aggregate/
+!asre_results/round3a/aggregate/*.csv
+!asre_results/round3a/aggregate/*.json
+!asre_results/round3a/aggregate/*.md
+!asre_results/round3a/aggregate/plots/
+!asre_results/round3a/aggregate/plots/*.png
+
 # The repository-wide tests/ rule above would otherwise hide these new tests.
 !experiments/asre_diagnosis/tests/
 !experiments/asre_diagnosis/tests/*.py

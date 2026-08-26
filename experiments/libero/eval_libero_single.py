@@ -40,6 +40,8 @@ from experiments.libero.prompt_context_cache import (
     load_prompt_context_cache as _load_prompt_context_cache,
 )
 from experiments.asre_diagnosis.common import (
+    ROUND2_PROTOCOL,
+    ROUND3A_PROTOCOL,
     atomic_write_json,
     build_run_metadata,
     get_num_model_layers,
@@ -1246,7 +1248,10 @@ def eval_single_process(cfg: DictConfig):
                 "sigma_shift",
                 "rand_device",
             ]
-            if str(cfg.ASRE_DIAGNOSIS.get("protocol")) == "round2_keep_schedules":
+            if str(cfg.ASRE_DIAGNOSIS.get("protocol")) in {
+                ROUND2_PROTOCOL,
+                ROUND3A_PROTOCOL,
+            }:
                 resume_keys.extend(
                     [
                         "condition_protocol",

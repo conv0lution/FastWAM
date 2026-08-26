@@ -3,8 +3,10 @@ from __future__ import annotations
 import unittest
 
 from experiments.asre_diagnosis.common import (
+    ROUND3A_PROTOCOL,
     build_conditions,
     build_round2_conditions,
+    build_round3a_conditions,
     enabled_to_disabled_layers,
     resolve_condition,
 )
@@ -88,6 +90,54 @@ class ConditionsTest(unittest.TestCase):
                     "protocol": "round2_keep_schedules",
                     "condition_name": "keep_15_29",
                     "enabled_video_retrieval_layers": list(range(20, 30)),
+                    "disabled_video_layers": [],
+                },
+                num_layers=30,
+            )
+
+    def test_round3a_conditions_are_exact_missing_factorial_cells(self) -> None:
+        conditions = build_round3a_conditions(30)
+        self.assertEqual(
+            [condition.name for condition in conditions],
+            ["keep_none_late", "keep_20_24", "keep_15_24"],
+        )
+        self.assertEqual(
+            [condition.enabled_video_retrieval_layers(30) for condition in conditions],
+            [(), tuple(range(20, 25)), tuple(range(15, 25))],
+        )
+        self.assertEqual(conditions[0].disabled_video_layers, tuple(range(30)))
+        self.assertEqual(
+            conditions[1].disabled_video_layers,
+            tuple(range(20)) + tuple(range(25, 30)),
+        )
+        self.assertEqual(
+            conditions[2].disabled_video_layers,
+            tuple(range(15)) + tuple(range(25, 30)),
+        )
+
+    def test_round3a_empty_keep_schedule_is_not_treated_as_null(self) -> None:
+        selected = resolve_condition(
+            {
+                "enabled": True,
+                "mode": "drop_video_kv",
+                "protocol": ROUND3A_PROTOCOL,
+                "condition_name": "keep_none_late",
+                "enabled_video_retrieval_layers": [],
+                "disabled_video_layers": list(range(30)),
+            },
+            num_layers=30,
+        )
+        self.assertEqual(selected, build_round3a_conditions(30)[0])
+
+    def test_round3a_rejects_mismatched_named_schedule(self) -> None:
+        with self.assertRaises(ValueError):
+            resolve_condition(
+                {
+                    "enabled": True,
+                    "mode": "drop_video_kv",
+                    "protocol": ROUND3A_PROTOCOL,
+                    "condition_name": "keep_20_24",
+                    "enabled_video_retrieval_layers": list(range(15, 25)),
                     "disabled_video_layers": [],
                 },
                 num_layers=30,

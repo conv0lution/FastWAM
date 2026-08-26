@@ -15,6 +15,7 @@ import torch
 
 ROUND1_PROTOCOL = "round1_drop_groups"
 ROUND2_PROTOCOL = "round2_keep_schedules"
+ROUND3A_PROTOCOL = "round3a_late_factorial"
 
 
 @dataclass(frozen=True)
@@ -79,6 +80,28 @@ def build_round2_conditions(num_layers: int) -> list[DiagnosisCondition]:
         ("keep_00_19", tuple(range(0, 20))),
         ("keep_15_19", tuple(range(15, 20))),
         ("keep_15_19_25_29", tuple(range(15, 20)) + tuple(range(25, 30))),
+    )
+    return [
+        DiagnosisCondition(
+            name=name,
+            disabled_video_layers=enabled_to_disabled_layers(enabled, num_layers),
+        )
+        for name, enabled in enabled_schedules
+    ]
+
+
+def build_round3a_conditions(num_layers: int) -> list[DiagnosisCondition]:
+    """Build the three missing cells in the pre-registered late-half factorial."""
+    if num_layers != 30:
+        raise ValueError(
+            "ASRE Round 3A is pre-registered for exactly 30 action layers; "
+            f"the selected model exposes {num_layers}."
+        )
+
+    enabled_schedules = (
+        ("keep_none_late", ()),
+        ("keep_20_24", tuple(range(20, 25))),
+        ("keep_15_24", tuple(range(15, 25))),
     )
     return [
         DiagnosisCondition(
@@ -185,20 +208,28 @@ def resolve_condition(diagnosis_cfg: Mapping[str, Any], num_layers: int) -> Diag
         return DiagnosisCondition("baseline", ())
 
     protocol = str(diagnosis_cfg.get("protocol", ROUND1_PROTOCOL))
-    if protocol not in {ROUND1_PROTOCOL, ROUND2_PROTOCOL}:
+    if protocol not in {ROUND1_PROTOCOL, ROUND2_PROTOCOL, ROUND3A_PROTOCOL}:
         raise ValueError(
             f"Unsupported ASRE_DIAGNOSIS.protocol={protocol!r}; expected "
-            f"{ROUND1_PROTOCOL!r} or {ROUND2_PROTOCOL!r}."
+            f"one of {ROUND1_PROTOCOL!r}, {ROUND2_PROTOCOL!r}, or "
+            f"{ROUND3A_PROTOCOL!r}."
         )
 
-    if protocol == ROUND2_PROTOCOL:
-        conditions = build_round2_conditions(num_layers)
+    if protocol in {ROUND2_PROTOCOL, ROUND3A_PROTOCOL}:
+        is_round2 = protocol == ROUND2_PROTOCOL
+        round_label = "Round-2" if is_round2 else "Round-3A"
+        conditions = (
+            build_round2_conditions(num_layers)
+            if is_round2
+            else build_round3a_conditions(num_layers)
+        )
         condition_index = diagnosis_cfg.get("condition_index")
         if condition_index is not None:
             condition_index = int(condition_index)
             if condition_index < 0 or condition_index >= len(conditions):
                 raise ValueError(
-                    f"Round-2 condition_index must be in [0, {len(conditions) - 1}], "
+                    f"{round_label} condition_index must be in "
+                    f"[0, {len(conditions) - 1}], "
                     f"got {condition_index}."
                 )
             selected = conditions[condition_index]
@@ -207,7 +238,8 @@ def resolve_condition(diagnosis_cfg: Mapping[str, Any], num_layers: int) -> Diag
             by_name = {condition.name: condition for condition in conditions}
             if condition_name not in by_name:
                 raise ValueError(
-                    f"Unknown ASRE Round-2 condition {condition_name!r}; expected one of "
+                    f"Unknown ASRE {round_label} condition {condition_name!r}; "
+                    "expected one of "
                     f"{list(by_name)}."
                 )
             selected = by_name[condition_name]
@@ -215,7 +247,7 @@ def resolve_condition(diagnosis_cfg: Mapping[str, Any], num_layers: int) -> Diag
         selected_enabled = selected.enabled_video_retrieval_layers(num_layers)
         if enabled_layers is None:
             raise ValueError(
-                "ASRE Round-2 conditions require an explicit "
+                f"ASRE {round_label} conditions require an explicit "
                 "enabled_video_retrieval_layers keep schedule."
             )
         if enabled_layers != selected_enabled:
