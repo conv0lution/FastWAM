@@ -4,6 +4,7 @@ import unittest
 
 from experiments.asre_diagnosis.round3b.self_replacement_test import (
     REPLACEMENT_LAYERS,
+    _require_logical_cuda_zero,
     _validate_audit,
 )
 
@@ -22,6 +23,14 @@ def _tensor_stats():
 
 
 class Round3BSelfReplacementTest(unittest.TestCase):
+    def test_default_and_explicit_logical_cuda_zero_are_equivalent(self) -> None:
+        self.assertEqual(str(_require_logical_cuda_zero("cuda")), "cuda")
+        self.assertEqual(str(_require_logical_cuda_zero("cuda:0")), "cuda:0")
+        with self.assertRaisesRegex(ValueError, "logical cuda:0"):
+            _require_logical_cuda_zero("cuda:1")
+        with self.assertRaisesRegex(ValueError, "logical cuda:0"):
+            _require_logical_cuda_zero("cpu")
+
     def _audit(self):
         layers = []
         for layer in range(30):

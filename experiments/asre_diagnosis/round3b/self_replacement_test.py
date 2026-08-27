@@ -39,6 +39,15 @@ DISABLED_LAYERS = tuple(range(15))
 REPLACEMENT_LAYERS = tuple(range(15, 30))
 
 
+def _require_logical_cuda_zero(value: str | torch.device) -> torch.device:
+    """Accept the default CUDA device or explicit logical device zero."""
+
+    device = torch.device(value)
+    if device.type != "cuda" or device.index not in (None, 0):
+        raise ValueError(f"Identity gate requires logical cuda:0, got {device}.")
+    return device
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Verify same-input video-cache replacement preserves actions."
@@ -220,9 +229,7 @@ def run_identity_test(
     cfg = _compose(task_config)
     cfg.model.load_text_encoder = False
     cfg.EVALUATION.text_encoder_device = None
-    model_device = _resolve_eval_device(cfg)
-    if str(model_device) != "cuda:0":
-        raise ValueError(f"Identity gate requires logical cuda:0, got {model_device}.")
+    model_device = str(_require_logical_cuda_zero(_resolve_eval_device(cfg)))
     dtype = _mixed_precision_to_model_dtype(cfg.get("mixed_precision", "bf16"))
     set_global_seed(42, get_worker_init_fn=False)
     model = instantiate(cfg.model, model_dtype=dtype, device=model_device)
