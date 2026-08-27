@@ -8,6 +8,7 @@ cd "${REPO_ROOT}"
 PYTHON_BIN="${PYTHON_BIN:-/home/zhaizicheng/miniconda3/envs/fastwam/bin/python}"
 CHECKPOINT="${CHECKPOINT:-/local_home/zhaizicheng/fastwam_assets/checkpoints/fastwam_release/libero_uncond_2cam224.pt}"
 DATASET_STATS="${DATASET_STATS:-/local_home/zhaizicheng/fastwam_assets/checkpoints/fastwam_release/libero_uncond_2cam224_dataset_stats.json}"
+DIFFSYNTH_MODEL_BASE_PATH="${DIFFSYNTH_MODEL_BASE_PATH:-/local_home/zhaizicheng/fastwam_assets/checkpoints/wan_base}"
 ROUND1_ROOT="${ASRE_ROUND1_OUTPUT_ROOT:-${REPO_ROOT}/asre_results}"
 ROUND2_ROOT="${ASRE_ROUND2_OUTPUT_ROOT:-${ROUND1_ROOT}/round2}"
 ROUND3B_ROOT="${ASRE_ROUND3B_OUTPUT_ROOT:-${ROUND1_ROOT}/round3b}"
@@ -21,12 +22,14 @@ LIBERO_ROOT="${LIBERO_ROOT:-${REPO_ROOT}/../LIBERO}"
 export PYTHONPATH="${REPO_ROOT}/src:${REPO_ROOT}:${LIBERO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
 export PYTHONUNBUFFERED=1
 export HYDRA_FULL_ERROR=1
+export DIFFSYNTH_MODEL_BASE_PATH
 unset MUJOCO_EGL_DEVICE_ID MUJOCO_GL PYOPENGL_PLATFORM
 
 for required in \
   "${PYTHON_BIN}" \
   "${CHECKPOINT}" \
   "${DATASET_STATS}" \
+  "${DIFFSYNTH_MODEL_BASE_PATH}/DiffSynth-Studio/Wan-Series-Converted-Safetensors/Wan2.2_VAE.safetensors" \
   "${STATE_BANK_DIR}/manifest.jsonl" \
   "${STATE_BANK_DIR}/run_metadata.json" \
   "${VALID_MANIFEST}"; do

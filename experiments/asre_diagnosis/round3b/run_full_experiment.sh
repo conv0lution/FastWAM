@@ -8,6 +8,7 @@ cd "${REPO_ROOT}"
 PYTHON_BIN="${PYTHON_BIN:-/home/zhaizicheng/miniconda3/envs/fastwam/bin/python}"
 CHECKPOINT="${CHECKPOINT:-/local_home/zhaizicheng/fastwam_assets/checkpoints/fastwam_release/libero_uncond_2cam224.pt}"
 DATASET_STATS="${DATASET_STATS:-/local_home/zhaizicheng/fastwam_assets/checkpoints/fastwam_release/libero_uncond_2cam224_dataset_stats.json}"
+DIFFSYNTH_MODEL_BASE_PATH="${DIFFSYNTH_MODEL_BASE_PATH:-/local_home/zhaizicheng/fastwam_assets/checkpoints/wan_base}"
 ROUND1_ROOT="${ASRE_ROUND1_OUTPUT_ROOT:-${REPO_ROOT}/asre_results}"
 ROUND2_ROOT="${ASRE_ROUND2_OUTPUT_ROOT:-${ROUND1_ROOT}/round2}"
 ROUND3A_ROOT="${ASRE_ROUND3A_OUTPUT_ROOT:-${ROUND1_ROOT}/round3a}"
@@ -31,11 +32,13 @@ LIBERO_ROOT="${LIBERO_ROOT:-${REPO_ROOT}/../LIBERO}"
 export PYTHONPATH="${REPO_ROOT}/src:${REPO_ROOT}:${LIBERO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
 export PYTHONUNBUFFERED=1
 export HYDRA_FULL_ERROR=1
+export DIFFSYNTH_MODEL_BASE_PATH
 
 for required in \
   "${PYTHON_BIN}" \
   "${CHECKPOINT}" \
   "${DATASET_STATS}" \
+  "${DIFFSYNTH_MODEL_BASE_PATH}/DiffSynth-Studio/Wan-Series-Converted-Safetensors/Wan2.2_VAE.safetensors" \
   "${VALID_MANIFEST}" \
   "${STATE_BANK_DIR}/manifest.jsonl" \
   "${ROUND3A_ROOT}/online_full/launcher_summary.json" \
