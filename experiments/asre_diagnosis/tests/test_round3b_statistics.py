@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from experiments.asre_diagnosis.round3b.statistics import (
+from experiments.asre_diagnosis.round3b.outcome_statistics import (
     CONDITION_ORDER,
     analyze_outcomes,
     classify_decision,

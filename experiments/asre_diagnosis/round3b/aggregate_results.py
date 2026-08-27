@@ -30,7 +30,7 @@ from experiments.asre_diagnosis.common import (  # noqa: E402
 from experiments.asre_diagnosis.round2.metrics import (  # noqa: E402
     compute_round2_metrics,
 )
-from experiments.asre_diagnosis.round3b.statistics import (  # noqa: E402
+from experiments.asre_diagnosis.round3b.outcome_statistics import (  # noqa: E402
     COMPARISON_ORDER,
     CONDITION_ORDER,
     analyze_outcomes,
