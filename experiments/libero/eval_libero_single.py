@@ -42,13 +42,16 @@ from experiments.libero.prompt_context_cache import (
 from experiments.asre_diagnosis.common import (
     ROUND2_PROTOCOL,
     ROUND3A_PROTOCOL,
+    ROUND3B_PROTOCOL,
     atomic_write_json,
     build_run_metadata,
     get_num_model_layers,
     now_iso,
     resolve_condition,
+    sha256_file,
     sha256_json,
 )
+from experiments.asre_diagnosis.round3b.donor import OnlineDonorBundle, tensor_sha256
 from fastwam.datasets.lerobot.processors.fastwam_processor import FastWAMProcessor
 from fastwam.datasets.lerobot.utils.normalizer import load_dataset_stats_from_json
 from fastwam.utils.pytorch_utils import set_global_seed
@@ -98,6 +101,172 @@ def _resolve_eval_device(cfg: DictConfig) -> str:
     if eval_device is not None:
         return str(eval_device)
     return "cuda" if torch.cuda.is_available() else "cpu"
+
+
+def _resolve_required_artifact_path(value: Any, *, label: str) -> Path:
+    if value is None or str(value).strip() == "":
+        raise ValueError(f"ASRE Round 3B requires {label}.")
+    path = Path(os.path.expanduser(os.path.expandvars(str(value)))).resolve()
+    if not path.is_file():
+        raise FileNotFoundError(f"ASRE Round 3B {label} is unavailable: {path}")
+    return path
+
+
+def _load_round3b_donor_bundle(
+    cfg: DictConfig,
+    *,
+    task_ids: list[int],
+) -> Optional[OnlineDonorBundle]:
+    """Load and verify the frozen donor bundle before any Round-3B rollout."""
+
+    diagnosis_cfg = cfg.get("ASRE_DIAGNOSIS", {})
+    if not bool(diagnosis_cfg.get("enabled", False)):
+        return None
+    protocol = str(diagnosis_cfg.get("protocol", ""))
+    donor_keys = (
+        "donor_mapping_path",
+        "donor_mapping_sha256",
+        "donor_observation_manifest_path",
+        "donor_observation_manifest_sha256",
+        "donor_observation_root",
+    )
+    configured = {
+        key: diagnosis_cfg.get(key)
+        for key in donor_keys
+        if diagnosis_cfg.get(key) is not None
+        and str(diagnosis_cfg.get(key)).strip() != ""
+    }
+    if protocol != ROUND3B_PROTOCOL:
+        if configured:
+            raise ValueError(
+                "Donor artifacts are only valid for the ASRE Round-3B protocol; "
+                f"received protocol={protocol!r}, fields={sorted(configured)}."
+            )
+        return None
+    missing = [key for key in donor_keys if key not in configured]
+    if missing:
+        raise ValueError(
+            "Every Round-3B condition must record and validate the same frozen donor "
+            f"bundle; missing ASRE_DIAGNOSIS fields: {missing}."
+        )
+    mapping_path = _resolve_required_artifact_path(
+        configured["donor_mapping_path"], label="donor_mapping_path"
+    )
+    manifest_path = _resolve_required_artifact_path(
+        configured["donor_observation_manifest_path"],
+        label="donor_observation_manifest_path",
+    )
+    observation_root = Path(
+        os.path.expanduser(os.path.expandvars(str(configured["donor_observation_root"])))
+    ).resolve()
+    if not observation_root.is_dir():
+        raise FileNotFoundError(
+            f"ASRE Round 3B donor_observation_root is unavailable: {observation_root}"
+        )
+    mapping_digest = str(configured["donor_mapping_sha256"])
+    manifest_digest = str(configured["donor_observation_manifest_sha256"])
+    for label, digest in (
+        ("donor_mapping_sha256", mapping_digest),
+        ("donor_observation_manifest_sha256", manifest_digest),
+    ):
+        if len(digest) != 64:
+            raise ValueError(f"ASRE Round 3B {label} must be a SHA256 digest, got {digest!r}.")
+    bundle = OnlineDonorBundle.load(
+        mapping_path=mapping_path,
+        observation_manifest_path=manifest_path,
+        observation_root=observation_root,
+        expected_mapping_sha256=mapping_digest,
+        expected_observation_manifest_sha256=manifest_digest,
+    )
+    expected_suite = str(cfg.EVALUATION.task_suite_name)
+    if str(bundle.mapping_payload.get("task_suite")) != expected_suite:
+        raise ValueError(
+            "Donor bundle task suite mismatch: "
+            f"{bundle.mapping_payload.get('task_suite')!r} != {expected_suite!r}."
+        )
+    expected_seed = None if cfg.get("seed") is None else int(cfg.seed)
+    if bundle.mapping_payload.get("seed") != expected_seed:
+        raise ValueError(
+            "Donor bundle seed mismatch: "
+            f"{bundle.mapping_payload.get('seed')!r} != {expected_seed!r}."
+        )
+    num_trials = int(bundle.mapping_payload.get("num_trials", 0))
+    if int(cfg.EVALUATION.num_trials) > num_trials:
+        raise ValueError(
+            "Round-3B evaluation requests more trials than the frozen donor mapping: "
+            f"{cfg.EVALUATION.num_trials} > {num_trials}."
+        )
+    missing_task_ids = [
+        task_id
+        for task_id in task_ids
+        if any((task_id, trial) not in bundle.mappings for trial in range(int(cfg.EVALUATION.num_trials)))
+    ]
+    if missing_task_ids:
+        raise ValueError(f"Frozen donor mapping does not cover task IDs: {missing_task_ids}.")
+    return bundle
+
+
+def _resolve_round3b_run_provenance(cfg: DictConfig) -> dict[str, Any]:
+    diagnosis_cfg = cfg.get("ASRE_DIAGNOSIS", {})
+    if str(diagnosis_cfg.get("protocol", "")) != ROUND3B_PROTOCOL:
+        return {}
+    required = (
+        "preflight_report_path",
+        "preflight_report_sha256",
+        "self_replacement_report_path",
+        "self_replacement_report_sha256",
+        "round3a_parent_tag",
+        "round3a_parent_commit",
+        "round3a_run_commit",
+    )
+    missing = [
+        key
+        for key in required
+        if diagnosis_cfg.get(key) is None or str(diagnosis_cfg.get(key)).strip() == ""
+    ]
+    if missing:
+        raise ValueError(f"Round-3B run provenance is incomplete; missing fields: {missing}.")
+    preflight_path = _resolve_required_artifact_path(
+        diagnosis_cfg.get("preflight_report_path"), label="preflight_report_path"
+    )
+    expected_preflight_digest = str(diagnosis_cfg.get("preflight_report_sha256"))
+    observed_preflight_digest = sha256_file(preflight_path)
+    if observed_preflight_digest != expected_preflight_digest:
+        raise ValueError(
+            "Round-3B preflight report SHA256 mismatch: "
+            f"observed={observed_preflight_digest}, "
+            f"expected={expected_preflight_digest}."
+        )
+    self_replacement_path = _resolve_required_artifact_path(
+        diagnosis_cfg.get("self_replacement_report_path"),
+        label="self_replacement_report_path",
+    )
+    expected_self_replacement_digest = str(
+        diagnosis_cfg.get("self_replacement_report_sha256")
+    )
+    observed_self_replacement_digest = sha256_file(self_replacement_path)
+    if observed_self_replacement_digest != expected_self_replacement_digest:
+        raise ValueError(
+            "Round-3B self-replacement report SHA256 mismatch: "
+            f"observed={observed_self_replacement_digest}, "
+            f"expected={expected_self_replacement_digest}."
+        )
+    for key in ("round3a_parent_commit", "round3a_run_commit"):
+        digest = str(diagnosis_cfg.get(key))
+        if len(digest) != 40 or any(character not in "0123456789abcdef" for character in digest):
+            raise ValueError(f"Round-3B {key} is not a full lowercase Git SHA: {digest!r}.")
+    payload = {
+        "preflight_report_path": str(preflight_path),
+        "preflight_report_sha256": observed_preflight_digest,
+        "self_replacement_report_path": str(self_replacement_path),
+        "self_replacement_report_sha256": observed_self_replacement_digest,
+        "round3a_parent_tag": str(diagnosis_cfg.get("round3a_parent_tag")),
+        "round3a_parent_commit": str(diagnosis_cfg.get("round3a_parent_commit")),
+        "round3a_run_commit": str(diagnosis_cfg.get("round3a_run_commit")),
+    }
+    for key, value in payload.items():
+        cfg.ASRE_DIAGNOSIS[key] = value
+    return payload
 
 
 def _resolve_dataset_stats_path(cfg: DictConfig) -> Path:
@@ -489,6 +658,8 @@ def _run_prepared_action_inference(
     model: torch.nn.Module,
     cfg: DictConfig,
     infer_kwargs: dict[str, Any],
+    *,
+    replacement_input_image: Optional[torch.Tensor] = None,
 ) -> tuple[torch.Tensor, Optional[list[Image.Image]]]:
     visualize_future_video = bool(cfg.EVALUATION.get("visualize_future_video", False))
     diagnosis_cfg = cfg.get("ASRE_DIAGNOSIS", {})
@@ -503,7 +674,8 @@ def _run_prepared_action_inference(
     infer_method = model.infer_joint if visualize_future_video else model.infer_action
     call_kwargs = dict(infer_kwargs)
     if diagnosis_enabled:
-        if "disabled_video_layers" not in inspect.signature(infer_method).parameters:
+        infer_parameters = inspect.signature(infer_method).parameters
+        if "disabled_video_layers" not in infer_parameters:
             raise ValueError(
                 f"{type(model).__name__}.{infer_method.__name__} does not support "
                 "the video-K/V diagnosis intervention."
@@ -511,6 +683,39 @@ def _run_prepared_action_inference(
         call_kwargs["disabled_video_layers"] = tuple(
             int(layer) for layer in diagnosis_cfg.get("disabled_video_layers", ())
         )
+        replacement_layers = tuple(
+            int(layer) for layer in diagnosis_cfg.get("replacement_video_layers", ())
+        )
+        if replacement_layers:
+            if replacement_input_image is None:
+                raise ValueError(
+                    "replacement_video_layers are configured but no frozen donor image "
+                    "was supplied for this recipient episode."
+                )
+            missing_parameters = [
+                name
+                for name in ("replacement_input_image", "replacement_video_layers")
+                if name not in infer_parameters
+            ]
+            if missing_parameters:
+                raise ValueError(
+                    f"{type(model).__name__}.{infer_method.__name__} does not support "
+                    f"Round-3B cache replacement arguments: {missing_parameters}."
+                )
+            if not bool(
+                torch.isfinite(
+                    replacement_input_image.detach().to(device="cpu", dtype=torch.float32)
+                ).all()
+            ):
+                raise ValueError("Round-3B replacement input image contains NaN or Inf.")
+            call_kwargs["replacement_input_image"] = replacement_input_image
+            call_kwargs["replacement_video_layers"] = replacement_layers
+        elif replacement_input_image is not None:
+            raise ValueError(
+                "A replacement image was supplied while replacement_video_layers is empty."
+            )
+    elif replacement_input_image is not None:
+        raise ValueError("A replacement image was supplied while ASRE diagnosis is disabled.")
 
     with torch.no_grad():
         if visualize_future_video:
@@ -554,6 +759,8 @@ def _predict_action_chunk(
     input_w: int,
     input_h: int,
     model_device: str,
+    replacement_input_image: Optional[torch.Tensor] = None,
+    expected_current_image_sha256: Optional[str] = None,
 ) -> tuple[np.ndarray, dict, Optional[list[Image.Image]], Optional[dict[str, Any]]]:
     infer_kwargs, imgs = _prepare_action_inference(
         obs=obs,
@@ -566,10 +773,30 @@ def _predict_action_chunk(
         input_h=input_h,
         model_device=model_device,
     )
+    observed_current_image_sha256 = None
+    if expected_current_image_sha256 is not None:
+        observed_current_image_sha256 = tensor_sha256(infer_kwargs["input_image"])
+        if observed_current_image_sha256 != expected_current_image_sha256:
+            raise ValueError(
+                "Recipient first-query model-ready image differs from the frozen "
+                "donor-mapping identity: "
+                f"observed={observed_current_image_sha256}, "
+                f"expected={expected_current_image_sha256}."
+            )
+        if replacement_input_image is None:
+            raise ValueError(
+                "A recipient first-query image identity was requested without a donor image."
+            )
+        donor_image_sha256 = tensor_sha256(replacement_input_image)
+        if donor_image_sha256 == observed_current_image_sha256:
+            raise ValueError(
+                "Recipient and donor first-query model-ready images are unexpectedly identical."
+            )
     raw_action, predicted_future_frames = _run_prepared_action_inference(
         model=model,
         cfg=cfg,
         infer_kwargs=infer_kwargs,
+        replacement_input_image=replacement_input_image,
     )
     action = _postprocess_action(raw_action, processor, cfg)
     diagnosis_cfg = cfg.get("ASRE_DIAGNOSIS", {})
@@ -578,6 +805,11 @@ def _predict_action_chunk(
     ):
         trace = {
             "action_inference_seed": infer_kwargs["seed"],
+            "replacement_video_layers": [
+                int(layer)
+                for layer in diagnosis_cfg.get("replacement_video_layers", ())
+            ],
+            "current_input_image_sha256": observed_current_image_sha256,
             "raw_action": raw_action.detach().to(device="cpu", dtype=torch.float32).numpy(),
             "executed_action": action.copy(),
         }
@@ -612,6 +844,8 @@ def run_single_episode(
     input_w: int,
     input_h: int,
     model_device: str,
+    replacement_input_image: Optional[torch.Tensor] = None,
+    donor_provenance: Optional[dict[str, Any]] = None,
 ) -> tuple[bool, list, list[dict[str, Any]], Optional[float], list[dict[str, Any]]]:
     max_steps = _get_max_steps(cfg.EVALUATION.task_suite_name)
     replan_steps = int(cfg.EVALUATION.get("replan_steps", 5))
@@ -665,6 +899,12 @@ def run_single_episode(
                 input_w=input_w,
                 input_h=input_h,
                 model_device=model_device,
+                replacement_input_image=replacement_input_image,
+                expected_current_image_sha256=(
+                    str(donor_provenance["recipient_image_sha256"])
+                    if donor_provenance is not None and policy_replan_idx == -1
+                    else None
+                ),
             )
             policy_replan_idx += 1
             if save_action_trace:
@@ -681,6 +921,19 @@ def run_single_episode(
                         "environment_step": int(t),
                     }
                 )
+                if donor_provenance is not None:
+                    trace.update(
+                        {
+                            "donor_trial": int(donor_provenance["donor_trial"]),
+                            "donor_task_id": int(donor_provenance["donor_task_id"]),
+                            "donor_image_sha256": str(
+                                donor_provenance["donor_image_sha256"]
+                            ),
+                            "donor_artifact_sha256": str(
+                                donor_provenance["donor_artifact_sha256"]
+                            ),
+                        }
+                    )
                 action_trace.append(trace)
             if predicted_future_frames is not None:
                 current_replan_idx += 1
@@ -779,6 +1032,7 @@ def run_single_task(
     input_w: int,
     input_h: int,
     model_device: str,
+    donor_bundle: Optional[OnlineDonorBundle] = None,
 ) -> dict:
     env, task_description = get_libero_env(task, LIBERO_ENV_RESOLUTION, cfg.get("seed"))
     visualize_future_video = bool(cfg.EVALUATION.get("visualize_future_video", False))
@@ -786,17 +1040,42 @@ def run_single_task(
     diagnosis_enabled = bool(diagnosis_cfg.get("enabled", False))
     save_rollout = not diagnosis_enabled or bool(diagnosis_cfg.get("save_rollout_video", False))
     save_action_trace = diagnosis_enabled and bool(diagnosis_cfg.get("save_action_trace", True))
+    replacement_layers = tuple(
+        int(layer) for layer in diagnosis_cfg.get("replacement_video_layers", ())
+    )
+    if replacement_layers and donor_bundle is None:
+        raise ValueError(
+            "Round-3B replacement layers are active but the frozen donor bundle "
+            "was not loaded."
+        )
     results = {
         "successes": 0,
         "failure_episodes": [],
         "success_episodes": [],
         "task_description": task_description,
+        "replacement_video_layers": list(replacement_layers),
+        "donor_assignments": [],
     }
     if visualize_future_video:
         results["episode_future_video_psnr"] = []
         results["future_video_psnr_mean"] = None
 
     for trial_idx in range(int(cfg.EVALUATION.num_trials)):
+        replacement_input_image = None
+        donor_provenance = None
+        if replacement_layers:
+            assert donor_bundle is not None
+            loaded_donor = donor_bundle.load_for_recipient(
+                task_id=int(cfg.EVALUATION.task_id),
+                recipient_trial=trial_idx,
+                recipient_initial_state=initial_states[trial_idx],
+                task_description=task_description,
+                device=model_device,
+                dtype=model.torch_dtype,
+            )
+            replacement_input_image = loaded_donor.image
+            donor_provenance = loaded_donor.provenance
+            results["donor_assignments"].append(dict(donor_provenance))
         success, replay_images, predicted_future_video_clips, episode_mean_psnr, action_trace = run_single_episode(
             env=env,
             initial_state=initial_states[trial_idx],
@@ -809,7 +1088,13 @@ def run_single_task(
             input_w=input_w,
             input_h=input_h,
             model_device=model_device,
+            replacement_input_image=replacement_input_image,
+            donor_provenance=donor_provenance,
         )
+        if donor_provenance is not None:
+            results["donor_assignments"][-1][
+                "recipient_first_query_image_verified"
+            ] = True
         if success:
             results["successes"] += 1
             results["success_episodes"].append(trial_idx)
@@ -901,6 +1186,7 @@ def _run_task_to_file(
     model_device: str,
     output_root: Path,
     worker_id: str | None,
+    donor_bundle: Optional[OnlineDonorBundle],
 ) -> tuple[Path, dict]:
     task_cfg = OmegaConf.create(OmegaConf.to_container(cfg, resolve=False))
     task_cfg.EVALUATION.task_suite_name = suite_name
@@ -954,8 +1240,41 @@ def _run_task_to_file(
                 "disabled_video_layers": [
                     int(layer) for layer in diagnosis_cfg.get("disabled_video_layers", ())
                 ],
+                "replacement_video_layers": [
+                    int(layer)
+                    for layer in diagnosis_cfg.get("replacement_video_layers", ())
+                ],
             }
         )
+        if donor_bundle is not None:
+            results.update(
+                {
+                    "donor_mapping_path": str(donor_bundle.mapping_path),
+                    "donor_mapping_sha256": donor_bundle.mapping_sha256,
+                    "donor_observation_manifest_path": str(
+                        donor_bundle.observation_manifest_path
+                    ),
+                    "donor_observation_manifest_sha256": (
+                        donor_bundle.observation_manifest_sha256
+                    ),
+                    "donor_observation_root": str(donor_bundle.observation_root),
+                }
+            )
+        if str(diagnosis_cfg.get("protocol", "")) == ROUND3B_PROTOCOL:
+            results.update(
+                {
+                    key: diagnosis_cfg.get(key)
+                    for key in (
+                        "preflight_report_path",
+                        "preflight_report_sha256",
+                        "self_replacement_report_path",
+                        "self_replacement_report_sha256",
+                        "round3a_parent_tag",
+                        "round3a_parent_commit",
+                        "round3a_run_commit",
+                    )
+                }
+            )
     if worker_id is not None:
         results["worker_id"] = worker_id
     results.update(
@@ -971,6 +1290,7 @@ def _run_task_to_file(
             input_w=input_w,
             input_h=input_h,
             model_device=model_device,
+            donor_bundle=donor_bundle,
         )
     )
     results["duration"] = time.time() - start_time
@@ -997,6 +1317,7 @@ def _run_worker_loop(
     input_h: int,
     model_device: str,
     output_root: Path,
+    donor_bundle: Optional[OnlineDonorBundle],
 ) -> None:
     pending_file = _required_worker_path("LIBERO_WORKER_PENDING_FILE")
     lock_file = _required_worker_path("LIBERO_WORKER_LOCK_FILE")
@@ -1032,6 +1353,7 @@ def _run_worker_loop(
                 model_device=model_device,
                 output_root=output_root,
                 worker_id=worker_id,
+                donor_bundle=donor_bundle,
             )
             completed += 1
             print(f"worker {worker_id} completed {suite_name},{task_id}: {output_file}")
@@ -1109,6 +1431,9 @@ def eval_single_process(cfg: DictConfig):
         condition.enabled_video_retrieval_layers(num_model_layers)
     )
     cfg.ASRE_DIAGNOSIS.disabled_video_layers = list(condition.disabled_video_layers)
+    cfg.ASRE_DIAGNOSIS.replacement_video_layers = list(
+        condition.replacement_video_layers
+    )
 
     dataset_stats_path = _resolve_dataset_stats_path(cfg)
     dataset_stats = load_dataset_stats_from_json(str(dataset_stats_path))
@@ -1142,6 +1467,9 @@ def eval_single_process(cfg: DictConfig):
             raise ValueError("EVALUATION.task_ids must not be empty when provided.")
         if len(set(task_ids)) != len(task_ids):
             raise ValueError(f"EVALUATION.task_ids contains duplicates: {task_ids}")
+
+    donor_bundle = _load_round3b_donor_bundle(cfg, task_ids=task_ids)
+    round3b_run_provenance = _resolve_round3b_run_provenance(cfg)
 
     diagnosis_enabled = bool(diagnosis_cfg.get("enabled", False))
     run_metadata = None
@@ -1203,6 +1531,9 @@ def eval_single_process(cfg: DictConfig):
                         condition.enabled_video_retrieval_layers(num_model_layers)
                     ),
                     "disabled_video_layers": list(condition.disabled_video_layers),
+                    "replacement_video_layers": list(
+                        condition.replacement_video_layers
+                    ),
                 },
                 "text_conditioning_source": (
                     "round1_state_bank_prompt_context_cache"
@@ -1227,6 +1558,24 @@ def eval_single_process(cfg: DictConfig):
                 "rand_device": str(cfg.EVALUATION.get("rand_device", "cpu")),
             }
         )
+        if donor_bundle is not None:
+            run_metadata.update(
+                {
+                    "donor_mapping_path": str(donor_bundle.mapping_path),
+                    "donor_mapping_sha256": donor_bundle.mapping_sha256,
+                    "donor_observation_manifest_path": str(
+                        donor_bundle.observation_manifest_path
+                    ),
+                    "donor_observation_manifest_sha256": (
+                        donor_bundle.observation_manifest_sha256
+                    ),
+                    "donor_observation_root": str(donor_bundle.observation_root),
+                    "donor_mapping_rule": str(
+                        donor_bundle.mapping_payload["mapping_rule"]
+                    ),
+                }
+            )
+        run_metadata.update(round3b_run_provenance)
         if metadata_path.exists():
             with metadata_path.open("r", encoding="utf-8") as handle:
                 existing_metadata = json.load(handle)
@@ -1251,6 +1600,7 @@ def eval_single_process(cfg: DictConfig):
             if str(cfg.ASRE_DIAGNOSIS.get("protocol")) in {
                 ROUND2_PROTOCOL,
                 ROUND3A_PROTOCOL,
+                ROUND3B_PROTOCOL,
             }:
                 resume_keys.extend(
                     [
@@ -1267,6 +1617,25 @@ def eval_single_process(cfg: DictConfig):
                         "prompt_template",
                         "torch_version",
                         "cuda_version",
+                    ]
+                )
+            if str(cfg.ASRE_DIAGNOSIS.get("protocol")) == ROUND3B_PROTOCOL:
+                resume_keys.extend(
+                    [
+                        "replacement_video_layers",
+                        "donor_mapping_path",
+                        "donor_mapping_sha256",
+                        "donor_observation_manifest_path",
+                        "donor_observation_manifest_sha256",
+                        "donor_observation_root",
+                        "donor_mapping_rule",
+                        "preflight_report_path",
+                        "preflight_report_sha256",
+                        "self_replacement_report_path",
+                        "self_replacement_report_sha256",
+                        "round3a_parent_tag",
+                        "round3a_parent_commit",
+                        "round3a_run_commit",
                     ]
                 )
             mismatches = {
@@ -1296,6 +1665,7 @@ def eval_single_process(cfg: DictConfig):
             input_h=input_h,
             model_device=model_device,
             output_root=output_root,
+            donor_bundle=donor_bundle,
         )
         if run_metadata is not None:
             run_metadata["end_timestamp"] = now_iso()
@@ -1328,6 +1698,7 @@ def eval_single_process(cfg: DictConfig):
             model_device=model_device,
             output_root=output_root,
             worker_id=None,
+            donor_bundle=donor_bundle,
         )
         all_results.append(results)
         print(

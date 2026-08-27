@@ -50,6 +50,7 @@ ASRE_DIAGNOSIS:
   protocol: round1_drop_groups
   enabled_video_retrieval_layers: null
   disabled_video_layers: []
+  replacement_video_layers: []
   condition_name: baseline
   condition_index: null
   save_action_trace: true
@@ -67,6 +68,19 @@ ASRE_DIAGNOSIS:
   state_bank_manifest_sha256: null
   valid_state_bank_manifest_sha256: null
   prompt_context_cache_sha256: null
+  donor_mapping_path: null
+  donor_mapping_sha256: null
+  donor_observation_manifest_path: null
+  donor_observation_manifest_sha256: null
+  donor_observation_root: null
+  offline_donor_mapping_path: null
+  preflight_report_path: null
+  preflight_report_sha256: null
+  self_replacement_report_path: null
+  self_replacement_report_sha256: null
+  round3a_parent_tag: null
+  round3a_parent_commit: null
+  round3a_run_commit: null
 
 MULTIRUN:
   create_only: false

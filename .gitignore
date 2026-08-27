@@ -289,6 +289,31 @@ asre_results/round3a/**
 !asre_results/round3a/aggregate/plots/figure_D_retrieval_schedule_schematic.png
 !asre_results/round3a/aggregate/plots/figure_E_task_level_factorial_heatmap.png
 
+# Round-3B donor tensors, per-state actions/cache audits, rollouts, smoke/full
+# logs, and gate working files stay local. Publish only compact causal-control
+# tables, summaries, provenance, and the five pre-specified figures.
+!asre_results/round3b/
+asre_results/round3b/**
+!asre_results/round3b/aggregate/
+!asre_results/round3b/aggregate/aggregate_metadata.json
+!asre_results/round3b/aggregate/online_condition_summary.csv
+!asre_results/round3b/aggregate/online_contrasts.csv
+!asre_results/round3b/aggregate/paired_transitions.csv
+!asre_results/round3b/aggregate/task_success.csv
+!asre_results/round3b/aggregate/offline_condition_metrics.csv
+!asre_results/round3b/aggregate/offline_wrong_vs_correct.csv
+!asre_results/round3b/aggregate/offline_replan_stage_metrics.csv
+!asre_results/round3b/aggregate/kv_scale_sanity.csv
+!asre_results/round3b/aggregate/round3b_summary.json
+!asre_results/round3b/aggregate/round3b_summary.md
+!asre_results/round3b/aggregate/result_summary_for_gpt.md
+!asre_results/round3b/aggregate/plots/
+!asre_results/round3b/aggregate/plots/figure_A_online_success.png
+!asre_results/round3b/aggregate/plots/figure_B_per_task_correct_to_wrong_delta.png
+!asre_results/round3b/aggregate/plots/figure_C_primary_paired_transitions.png
+!asre_results/round3b/aggregate/plots/figure_D_offline_action_metrics.png
+!asre_results/round3b/aggregate/plots/figure_E_kv_scale_sanity.png
+
 # The repository-wide tests/ rule above would otherwise hide these new tests.
 !experiments/asre_diagnosis/tests/
 !experiments/asre_diagnosis/tests/*.py

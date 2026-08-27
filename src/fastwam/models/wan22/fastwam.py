@@ -11,6 +11,11 @@ from .action_dit import ActionDiT
 from .helpers.loader import load_wan22_ti2v_5b_components
 from .mot import MoT
 from .schedulers.scheduler_continuous import WanContinuousFlowMatchScheduler
+from .video_cache_replacement import (
+    build_video_cache_stats,
+    normalize_video_layer_indices,
+    select_replacement_video_cache,
+)
 
 logger = get_logger(__name__)
 
@@ -1021,25 +1026,35 @@ class FastWAM(torch.nn.Module):
         tiled: bool = False,
         compile_action_infer: bool = False,
         disabled_video_layers: Optional[Sequence[int]] = None,
+        replacement_input_image: Optional[torch.Tensor] = None,
+        replacement_video_layers: Optional[Sequence[int]] = None,
+        return_video_cache_stats: bool = False,
     ) -> dict[str, Any]:
         self.eval()
-        if disabled_video_layers is None:
-            disabled_video_layers_tuple: tuple[int, ...] = ()
-        else:
-            requested_layers = list(disabled_video_layers)
-            if any(isinstance(layer, bool) or not isinstance(layer, int) for layer in requested_layers):
-                raise TypeError("`disabled_video_layers` must contain only integer layer indices.")
-            if len(set(requested_layers)) != len(requested_layers):
-                raise ValueError("`disabled_video_layers` must not contain duplicate indices.")
-            invalid_layers = [
-                layer for layer in requested_layers if layer < 0 or layer >= self.mot.num_layers
-            ]
-            if invalid_layers:
-                raise ValueError(
-                    "`disabled_video_layers` contains out-of-range indices "
-                    f"{invalid_layers}; valid range is [0, {self.mot.num_layers - 1}]."
-                )
-            disabled_video_layers_tuple = tuple(sorted(requested_layers))
+        disabled_video_layers_tuple = normalize_video_layer_indices(
+            disabled_video_layers,
+            argument_name="disabled_video_layers",
+            num_layers=self.mot.num_layers,
+        )
+        replacement_video_layers_tuple = normalize_video_layer_indices(
+            replacement_video_layers,
+            argument_name="replacement_video_layers",
+            num_layers=self.mot.num_layers,
+        )
+        replacement_enabled = bool(replacement_video_layers_tuple)
+        if replacement_enabled != (replacement_input_image is not None):
+            raise ValueError(
+                "`replacement_input_image` and a non-empty `replacement_video_layers` "
+                "must be provided together."
+            )
+        overlap = sorted(
+            set(disabled_video_layers_tuple).intersection(replacement_video_layers_tuple)
+        )
+        if overlap:
+            raise ValueError(
+                "Video-cache replacement and deletion must be disjoint; overlapping layers: "
+                f"{overlap}."
+            )
         if str(getattr(self.video_expert, "video_attention_mask_mode", "")) != "first_frame_causal":
             raise ValueError(
                 "`infer_action` requires `video_attention_mask_mode='first_frame_causal'`."
@@ -1056,6 +1071,28 @@ class FastWAM(torch.nn.Module):
             raise ValueError(
                 f"`input_image` must be resized before infer, expected multiples of 16 but got HxW=({height},{width})"
             )
+        if replacement_input_image is not None:
+            if replacement_input_image.ndim == 3:
+                replacement_input_image = replacement_input_image.unsqueeze(0)
+            if replacement_input_image.shape != input_image.shape:
+                raise ValueError(
+                    "`replacement_input_image` must exactly match the current image shape; "
+                    f"current={tuple(input_image.shape)}, "
+                    f"replacement={tuple(replacement_input_image.shape)}."
+                )
+            if replacement_input_image.dtype != input_image.dtype:
+                raise TypeError(
+                    "`replacement_input_image` must exactly match the current image dtype; "
+                    f"current={input_image.dtype}, replacement={replacement_input_image.dtype}."
+                )
+            if replacement_input_image.device != input_image.device:
+                raise ValueError(
+                    "`replacement_input_image` must initially be on the same device as the "
+                    "current image; "
+                    f"current={input_image.device}, replacement={replacement_input_image.device}."
+                )
+            if not bool(torch.isfinite(replacement_input_image).all().item()):
+                raise ValueError("`replacement_input_image` must contain only finite values.")
         if proprio is not None:
             if self.proprio_dim is None:
                 raise ValueError("`proprio` was provided but `proprio_dim=None` so `proprio_encoder` is disabled.")
@@ -1079,6 +1116,33 @@ class FastWAM(torch.nn.Module):
 
         input_image = input_image.to(device=self.device, dtype=self.torch_dtype)
         first_frame_latents = self._encode_input_image_latents_tensor(input_image=input_image, tiled=tiled)
+        replacement_first_frame_latents = None
+        if replacement_input_image is not None:
+            replacement_input_image = replacement_input_image.to(
+                device=self.device, dtype=self.torch_dtype
+            )
+            replacement_first_frame_latents = self._encode_input_image_latents_tensor(
+                input_image=replacement_input_image,
+                tiled=tiled,
+            )
+            if replacement_first_frame_latents.shape != first_frame_latents.shape:
+                raise ValueError(
+                    "Replacement first-frame latent shape mismatch: "
+                    f"current={tuple(first_frame_latents.shape)}, "
+                    f"replacement={tuple(replacement_first_frame_latents.shape)}."
+                )
+            if replacement_first_frame_latents.dtype != first_frame_latents.dtype:
+                raise TypeError(
+                    "Replacement first-frame latent dtype mismatch: "
+                    f"current={first_frame_latents.dtype}, "
+                    f"replacement={replacement_first_frame_latents.dtype}."
+                )
+            if replacement_first_frame_latents.device != first_frame_latents.device:
+                raise ValueError(
+                    "Replacement first-frame latent device mismatch: "
+                    f"current={first_frame_latents.device}, "
+                    f"replacement={replacement_first_frame_latents.device}."
+                )
         fuse_flag = bool(getattr(self.video_expert, "fuse_vae_embedding_in_latents", False))
 
         use_prompt = prompt is not None
@@ -1134,6 +1198,48 @@ class FastWAM(torch.nn.Module):
             action=None,
             fuse_vae_embedding_in_latents=fuse_flag,
         )
+        replacement_video_prepared = None
+        if replacement_first_frame_latents is not None:
+            replacement_video_prepared = self.video_expert.prepare(
+                x=replacement_first_frame_latents,
+                timestep=timestep_video,
+                context=context,
+                context_mask=context_mask,
+                action=None,
+                fuse_vae_embedding_in_latents=fuse_flag,
+            )
+            structural_pairs = (
+                ("tokens", video_tokens, replacement_video_prepared[0]),
+                ("timestep modulation", video_t_mod, replacement_video_prepared[2]),
+                ("context", video_context, replacement_video_prepared[3]),
+                ("context mask", video_context_mask, replacement_video_prepared[4]),
+                ("frequencies", video_freqs, replacement_video_prepared[5]),
+            )
+            for label, current_tensor, replacement_tensor in structural_pairs:
+                if replacement_tensor.shape != current_tensor.shape:
+                    raise ValueError(
+                        f"Replacement video {label} shape mismatch: "
+                        f"current={tuple(current_tensor.shape)}, "
+                        f"replacement={tuple(replacement_tensor.shape)}."
+                    )
+                if replacement_tensor.dtype != current_tensor.dtype:
+                    raise TypeError(
+                        f"Replacement video {label} dtype mismatch: "
+                        f"current={current_tensor.dtype}, "
+                        f"replacement={replacement_tensor.dtype}."
+                    )
+                if replacement_tensor.device != current_tensor.device:
+                    raise ValueError(
+                        f"Replacement video {label} device mismatch: "
+                        f"current={current_tensor.device}, "
+                        f"replacement={replacement_tensor.device}."
+                    )
+            if int(replacement_video_prepared[9]) != int(tokens_per_frame):
+                raise ValueError(
+                    "Replacement video token layout mismatch: "
+                    f"current tokens/frame={tokens_per_frame}, "
+                    f"replacement tokens/frame={replacement_video_prepared[9]}."
+                )
         video_seq_len = int(video_tokens.shape[1])
         attention_mask = self._build_mot_attention_mask(
             video_seq_len=video_seq_len,
@@ -1176,6 +1282,82 @@ class FastWAM(torch.nn.Module):
             video_cache_k = [cache.clone() for cache in video_cache_k]
             video_cache_v = [cache.clone() for cache in video_cache_v]
 
+        current_video_cache_k = video_cache_k
+        current_video_cache_v = video_cache_v
+        replacement_video_cache_k = None
+        replacement_video_cache_v = None
+        replacement_video_seq_len = None
+        replacement_tokens_per_frame = None
+        if replacement_video_prepared is not None:
+            replacement_video_tokens = replacement_video_prepared[0]
+            replacement_video_seq_len = int(replacement_video_tokens.shape[1])
+            replacement_tokens_per_frame = int(replacement_video_prepared[9])
+            if replacement_video_seq_len != video_seq_len:
+                raise ValueError(
+                    "Replacement video sequence length mismatch: "
+                    f"current={video_seq_len}, replacement={replacement_video_seq_len}."
+                )
+            if compile_action_infer:
+                torch.compiler.cudagraph_mark_step_begin()
+            replacement_video_cache_k, replacement_video_cache_v = prefill_video_cache(
+                video_tokens=replacement_video_tokens,
+                video_freqs=replacement_video_prepared[5],
+                video_t_mod=replacement_video_prepared[2],
+                video_context=replacement_video_prepared[3],
+                video_context_mask=replacement_video_prepared[4],
+                video_attention_mask=video_attention_mask,
+            )
+            if compile_action_infer:
+                replacement_video_cache_k = [
+                    cache.clone() for cache in replacement_video_cache_k
+                ]
+                replacement_video_cache_v = [
+                    cache.clone() for cache in replacement_video_cache_v
+                ]
+            video_cache_k, video_cache_v = select_replacement_video_cache(
+                current_cache_k=current_video_cache_k,
+                current_cache_v=current_video_cache_v,
+                replacement_cache_k=replacement_video_cache_k,
+                replacement_cache_v=replacement_video_cache_v,
+                replacement_video_layers=replacement_video_layers_tuple,
+                num_layers=self.mot.num_layers,
+            )
+
+        video_cache_stats = None
+        if return_video_cache_stats:
+            video_cache_stats = build_video_cache_stats(
+                current_cache_k=current_video_cache_k,
+                current_cache_v=current_video_cache_v,
+                replacement_cache_k=replacement_video_cache_k,
+                replacement_cache_v=replacement_video_cache_v,
+                replacement_video_layers=replacement_video_layers_tuple,
+                num_layers=self.mot.num_layers,
+                summary_video_layers=(
+                    replacement_video_layers_tuple
+                    if replacement_video_layers_tuple
+                    else None
+                ),
+            )
+            video_cache_stats.update(
+                {
+                    "disabled_video_layers": list(disabled_video_layers_tuple),
+                    "current_video_seq_len": video_seq_len,
+                    "replacement_video_seq_len": replacement_video_seq_len,
+                    "current_video_tokens_per_frame": int(tokens_per_frame),
+                    "replacement_video_tokens_per_frame": replacement_tokens_per_frame,
+                    "action_attention_mask_shape": list(action_attention_mask.shape),
+                }
+            )
+
+        if replacement_enabled:
+            current_video_cache_k = []
+            current_video_cache_v = []
+            replacement_video_cache_k = None
+            replacement_video_cache_v = None
+            replacement_video_prepared = None
+            replacement_first_frame_latents = None
+            replacement_input_image = None
+
         infer_timesteps_action, infer_deltas_action = self.infer_action_scheduler.build_inference_schedule(
             num_inference_steps=num_inference_steps,
             device=self.device,
@@ -1201,9 +1383,12 @@ class FastWAM(torch.nn.Module):
 
             latents_action = self.infer_action_scheduler.step(pred_action, step_delta_action, latents_action)
 
-        return {
+        output = {
             "action": latents_action[0].detach().to(device="cpu", dtype=torch.float32),
         }
+        if video_cache_stats is not None:
+            output["video_cache_stats"] = video_cache_stats
+        return output
 
     @torch.no_grad()
     def infer(

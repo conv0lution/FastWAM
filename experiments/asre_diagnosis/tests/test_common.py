@@ -4,9 +4,11 @@ import unittest
 
 from experiments.asre_diagnosis.common import (
     ROUND3A_PROTOCOL,
+    ROUND3B_PROTOCOL,
     build_conditions,
     build_round2_conditions,
     build_round3a_conditions,
+    build_round3b_conditions,
     enabled_to_disabled_layers,
     resolve_condition,
 )
@@ -148,6 +150,61 @@ class ConditionsTest(unittest.TestCase):
             enabled_to_disabled_layers([1, 3], 5),
             (0, 2, 4),
         )
+
+    def test_round3b_conditions_freeze_exact_cache_sources(self) -> None:
+        correct, wrong, no_video = build_round3b_conditions(30)
+        self.assertEqual(
+            [condition.name for condition in (correct, wrong, no_video)],
+            ["late_current_correct", "late_wrong_scene", "late_no_video"],
+        )
+        self.assertEqual(correct.disabled_video_layers, tuple(range(15)))
+        self.assertEqual(correct.replacement_video_layers, ())
+        self.assertEqual(wrong.disabled_video_layers, tuple(range(15)))
+        self.assertEqual(wrong.replacement_video_layers, tuple(range(15, 30)))
+        self.assertEqual(no_video.disabled_video_layers, tuple(range(30)))
+        self.assertEqual(no_video.replacement_video_layers, ())
+
+    def test_round3b_wrong_scene_resolves_only_exact_frozen_schedule(self) -> None:
+        selected = resolve_condition(
+            {
+                "enabled": True,
+                "mode": "replace_video_kv",
+                "protocol": ROUND3B_PROTOCOL,
+                "condition_name": "late_wrong_scene",
+                "enabled_video_retrieval_layers": list(range(15, 30)),
+                "disabled_video_layers": list(range(15)),
+                "replacement_video_layers": list(range(15, 30)),
+            },
+            num_layers=30,
+        )
+        self.assertEqual(selected, build_round3b_conditions(30)[1])
+
+    def test_round3b_rejects_drop_mode_or_disabled_replacement_overlap(self) -> None:
+        with self.assertRaisesRegex(ValueError, "requires.*replace_video_kv"):
+            resolve_condition(
+                {
+                    "enabled": True,
+                    "mode": "drop_video_kv",
+                    "protocol": ROUND3B_PROTOCOL,
+                    "condition_name": "late_current_correct",
+                    "enabled_video_retrieval_layers": list(range(15, 30)),
+                    "disabled_video_layers": list(range(15)),
+                },
+                num_layers=30,
+            )
+        with self.assertRaisesRegex(ValueError, "disjoint"):
+            resolve_condition(
+                {
+                    "enabled": True,
+                    "mode": "replace_video_kv",
+                    "protocol": ROUND3B_PROTOCOL,
+                    "condition_name": "late_wrong_scene",
+                    "enabled_video_retrieval_layers": list(range(15, 30)),
+                    "disabled_video_layers": list(range(15)),
+                    "replacement_video_layers": [14, *range(15, 30)],
+                },
+                num_layers=30,
+            )
 
 
 if __name__ == "__main__":
