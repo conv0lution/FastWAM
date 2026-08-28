@@ -78,9 +78,13 @@ ASRE_DIAGNOSIS:
   preflight_report_sha256: null
   self_replacement_report_path: null
   self_replacement_report_sha256: null
+  machinery_report_path: null
+  machinery_report_sha256: null
   round3a_parent_tag: null
   round3a_parent_commit: null
   round3a_run_commit: null
+  round3b_parent_tag: null
+  round3b_parent_commit: null
 
 MULTIRUN:
   create_only: false

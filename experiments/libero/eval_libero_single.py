@@ -40,6 +40,7 @@ from experiments.libero.prompt_context_cache import (
     load_prompt_context_cache as _load_prompt_context_cache,
 )
 from experiments.asre_diagnosis.common import (
+    G0_PROTOCOL,
     ROUND2_PROTOCOL,
     ROUND3A_PROTOCOL,
     ROUND3B_PROTOCOL,
@@ -103,21 +104,23 @@ def _resolve_eval_device(cfg: DictConfig) -> str:
     return "cuda" if torch.cuda.is_available() else "cpu"
 
 
-def _resolve_required_artifact_path(value: Any, *, label: str) -> Path:
+def _resolve_required_artifact_path(
+    value: Any, *, label: str, protocol_label: str = "ASRE Round 3B"
+) -> Path:
     if value is None or str(value).strip() == "":
-        raise ValueError(f"ASRE Round 3B requires {label}.")
+        raise ValueError(f"{protocol_label} requires {label}.")
     path = Path(os.path.expanduser(os.path.expandvars(str(value)))).resolve()
     if not path.is_file():
-        raise FileNotFoundError(f"ASRE Round 3B {label} is unavailable: {path}")
+        raise FileNotFoundError(f"{protocol_label} {label} is unavailable: {path}")
     return path
 
 
-def _load_round3b_donor_bundle(
+def _load_donor_bundle(
     cfg: DictConfig,
     *,
     task_ids: list[int],
 ) -> Optional[OnlineDonorBundle]:
-    """Load and verify the frozen donor bundle before any Round-3B rollout."""
+    """Load and verify the frozen donor bundle for a replacement protocol."""
 
     diagnosis_cfg = cfg.get("ASRE_DIAGNOSIS", {})
     if not bool(diagnosis_cfg.get("enabled", False)):
@@ -136,17 +139,17 @@ def _load_round3b_donor_bundle(
         if diagnosis_cfg.get(key) is not None
         and str(diagnosis_cfg.get(key)).strip() != ""
     }
-    if protocol != ROUND3B_PROTOCOL:
+    if protocol not in {ROUND3B_PROTOCOL, G0_PROTOCOL}:
         if configured:
             raise ValueError(
-                "Donor artifacts are only valid for the ASRE Round-3B protocol; "
+                "Donor artifacts are only valid for replacement-capable ASRE protocols; "
                 f"received protocol={protocol!r}, fields={sorted(configured)}."
             )
         return None
     missing = [key for key in donor_keys if key not in configured]
     if missing:
         raise ValueError(
-            "Every Round-3B condition must record and validate the same frozen donor "
+            "Every replacement-capable condition must record and validate the same frozen donor "
             f"bundle; missing ASRE_DIAGNOSIS fields: {missing}."
         )
     mapping_path = _resolve_required_artifact_path(
@@ -161,7 +164,7 @@ def _load_round3b_donor_bundle(
     ).resolve()
     if not observation_root.is_dir():
         raise FileNotFoundError(
-            f"ASRE Round 3B donor_observation_root is unavailable: {observation_root}"
+            f"ASRE donor_observation_root is unavailable: {observation_root}"
         )
     mapping_digest = str(configured["donor_mapping_sha256"])
     manifest_digest = str(configured["donor_observation_manifest_sha256"])
@@ -170,7 +173,7 @@ def _load_round3b_donor_bundle(
         ("donor_observation_manifest_sha256", manifest_digest),
     ):
         if len(digest) != 64:
-            raise ValueError(f"ASRE Round 3B {label} must be a SHA256 digest, got {digest!r}.")
+            raise ValueError(f"ASRE donor {label} must be a SHA256 digest, got {digest!r}.")
     bundle = OnlineDonorBundle.load(
         mapping_path=mapping_path,
         observation_manifest_path=manifest_path,
@@ -193,7 +196,7 @@ def _load_round3b_donor_bundle(
     num_trials = int(bundle.mapping_payload.get("num_trials", 0))
     if int(cfg.EVALUATION.num_trials) > num_trials:
         raise ValueError(
-            "Round-3B evaluation requests more trials than the frozen donor mapping: "
+            "ASRE evaluation requests more trials than the frozen donor mapping: "
             f"{cfg.EVALUATION.num_trials} > {num_trials}."
         )
     missing_task_ids = [
@@ -204,6 +207,13 @@ def _load_round3b_donor_bundle(
     if missing_task_ids:
         raise ValueError(f"Frozen donor mapping does not cover task IDs: {missing_task_ids}.")
     return bundle
+
+
+def _load_round3b_donor_bundle(
+    cfg: DictConfig, *, task_ids: list[int]
+) -> Optional[OnlineDonorBundle]:
+    """Backward-compatible alias for downstream Round-3B callers."""
+    return _load_donor_bundle(cfg, task_ids=task_ids)
 
 
 def _resolve_round3b_run_provenance(cfg: DictConfig) -> dict[str, Any]:
@@ -264,6 +274,59 @@ def _resolve_round3b_run_provenance(cfg: DictConfig) -> dict[str, Any]:
         "round3a_parent_commit": str(diagnosis_cfg.get("round3a_parent_commit")),
         "round3a_run_commit": str(diagnosis_cfg.get("round3a_run_commit")),
     }
+    for key, value in payload.items():
+        cfg.ASRE_DIAGNOSIS[key] = value
+    return payload
+
+
+def _resolve_g0_run_provenance(cfg: DictConfig) -> dict[str, Any]:
+    """Validate reports and frozen Stage-1 parents attached to a G0 run."""
+    diagnosis_cfg = cfg.get("ASRE_DIAGNOSIS", {})
+    if str(diagnosis_cfg.get("protocol", "")) != G0_PROTOCOL:
+        return {}
+    required = (
+        "preflight_report_path",
+        "preflight_report_sha256",
+        "machinery_report_path",
+        "machinery_report_sha256",
+        "round3a_parent_tag",
+        "round3a_parent_commit",
+        "round3b_parent_tag",
+        "round3b_parent_commit",
+    )
+    missing = [
+        key
+        for key in required
+        if diagnosis_cfg.get(key) is None or str(diagnosis_cfg.get(key)).strip() == ""
+    ]
+    if missing:
+        raise ValueError(f"G0 run provenance is incomplete; missing fields: {missing}.")
+
+    payload: dict[str, Any] = {}
+    for stem in ("preflight_report", "machinery_report"):
+        path_key = f"{stem}_path"
+        digest_key = f"{stem}_sha256"
+        path = _resolve_required_artifact_path(
+            diagnosis_cfg.get(path_key), label=path_key, protocol_label="ASRE G0"
+        )
+        observed = sha256_file(path)
+        expected = str(diagnosis_cfg.get(digest_key))
+        if observed != expected:
+            raise ValueError(
+                f"G0 {stem} SHA256 mismatch: observed={observed}, expected={expected}."
+            )
+        payload[path_key] = str(path)
+        payload[digest_key] = observed
+
+    for key in ("round3a_parent_commit", "round3b_parent_commit"):
+        digest = str(diagnosis_cfg.get(key))
+        if len(digest) != 40 or any(
+            character not in "0123456789abcdef" for character in digest
+        ):
+            raise ValueError(f"G0 {key} is not a full lowercase Git SHA: {digest!r}.")
+        payload[key] = digest
+    for key in ("round3a_parent_tag", "round3b_parent_tag"):
+        payload[key] = str(diagnosis_cfg.get(key))
     for key, value in payload.items():
         cfg.ASRE_DIAGNOSIS[key] = value
     return payload
@@ -1275,6 +1338,22 @@ def _run_task_to_file(
                     )
                 }
             )
+        if str(diagnosis_cfg.get("protocol", "")) == G0_PROTOCOL:
+            results.update(
+                {
+                    key: diagnosis_cfg.get(key)
+                    for key in (
+                        "preflight_report_path",
+                        "preflight_report_sha256",
+                        "machinery_report_path",
+                        "machinery_report_sha256",
+                        "round3a_parent_tag",
+                        "round3a_parent_commit",
+                        "round3b_parent_tag",
+                        "round3b_parent_commit",
+                    )
+                }
+            )
     if worker_id is not None:
         results["worker_id"] = worker_id
     results.update(
@@ -1468,8 +1547,11 @@ def eval_single_process(cfg: DictConfig):
         if len(set(task_ids)) != len(task_ids):
             raise ValueError(f"EVALUATION.task_ids contains duplicates: {task_ids}")
 
-    donor_bundle = _load_round3b_donor_bundle(cfg, task_ids=task_ids)
-    round3b_run_provenance = _resolve_round3b_run_provenance(cfg)
+    donor_bundle = _load_donor_bundle(cfg, task_ids=task_ids)
+    run_provenance = {
+        **_resolve_round3b_run_provenance(cfg),
+        **_resolve_g0_run_provenance(cfg),
+    }
 
     diagnosis_enabled = bool(diagnosis_cfg.get("enabled", False))
     run_metadata = None
@@ -1575,7 +1657,7 @@ def eval_single_process(cfg: DictConfig):
                     ),
                 }
             )
-        run_metadata.update(round3b_run_provenance)
+        run_metadata.update(run_provenance)
         if metadata_path.exists():
             with metadata_path.open("r", encoding="utf-8") as handle:
                 existing_metadata = json.load(handle)
@@ -1601,6 +1683,7 @@ def eval_single_process(cfg: DictConfig):
                 ROUND2_PROTOCOL,
                 ROUND3A_PROTOCOL,
                 ROUND3B_PROTOCOL,
+                G0_PROTOCOL,
             }:
                 resume_keys.extend(
                     [
@@ -1619,7 +1702,10 @@ def eval_single_process(cfg: DictConfig):
                         "cuda_version",
                     ]
                 )
-            if str(cfg.ASRE_DIAGNOSIS.get("protocol")) == ROUND3B_PROTOCOL:
+            if str(cfg.ASRE_DIAGNOSIS.get("protocol")) in {
+                ROUND3B_PROTOCOL,
+                G0_PROTOCOL,
+            }:
                 resume_keys.extend(
                     [
                         "replacement_video_layers",
@@ -1629,6 +1715,11 @@ def eval_single_process(cfg: DictConfig):
                         "donor_observation_manifest_sha256",
                         "donor_observation_root",
                         "donor_mapping_rule",
+                    ]
+                )
+            if str(cfg.ASRE_DIAGNOSIS.get("protocol")) == ROUND3B_PROTOCOL:
+                resume_keys.extend(
+                    [
                         "preflight_report_path",
                         "preflight_report_sha256",
                         "self_replacement_report_path",
@@ -1636,6 +1727,19 @@ def eval_single_process(cfg: DictConfig):
                         "round3a_parent_tag",
                         "round3a_parent_commit",
                         "round3a_run_commit",
+                    ]
+                )
+            if str(cfg.ASRE_DIAGNOSIS.get("protocol")) == G0_PROTOCOL:
+                resume_keys.extend(
+                    [
+                        "preflight_report_path",
+                        "preflight_report_sha256",
+                        "machinery_report_path",
+                        "machinery_report_sha256",
+                        "round3a_parent_tag",
+                        "round3a_parent_commit",
+                        "round3b_parent_tag",
+                        "round3b_parent_commit",
                     ]
                 )
             mismatches = {

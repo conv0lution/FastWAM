@@ -17,6 +17,7 @@ ROUND1_PROTOCOL = "round1_drop_groups"
 ROUND2_PROTOCOL = "round2_keep_schedules"
 ROUND3A_PROTOCOL = "round3a_late_factorial"
 ROUND3B_PROTOCOL = "round3b_matched_kv_replacement"
+G0_PROTOCOL = "g0_cross_suite_generalization"
 
 
 @dataclass(frozen=True)
@@ -133,6 +134,29 @@ def build_round3b_conditions(num_layers: int) -> list[DiagnosisCondition]:
             replacement_video_layers=late_layers,
         ),
         DiagnosisCondition("late_no_video", tuple(range(30))),
+    ]
+
+
+def build_g0_conditions(num_layers: int) -> list[DiagnosisCondition]:
+    """Build the four pre-registered G0 cross-suite generalization conditions."""
+    if num_layers != 30:
+        raise ValueError(
+            "ASRE G0 is pre-registered for exactly 30 action layers; "
+            f"the selected model exposes {num_layers}."
+        )
+
+    early_half = tuple(range(0, 15))
+    late_third = tuple(range(20, 30))
+    late_half = tuple(range(15, 30))
+    return [
+        DiagnosisCondition("full_current", ()),
+        DiagnosisCondition("late_current_15_29", early_half),
+        DiagnosisCondition("early_current_00_19", late_third),
+        DiagnosisCondition(
+            "late_wrong_scene_15_29",
+            early_half,
+            replacement_video_layers=late_half,
+        ),
     ]
 
 
@@ -272,27 +296,37 @@ def resolve_condition(diagnosis_cfg: Mapping[str, Any], num_layers: int) -> Diag
         ROUND2_PROTOCOL,
         ROUND3A_PROTOCOL,
         ROUND3B_PROTOCOL,
+        G0_PROTOCOL,
     }:
         raise ValueError(
             f"Unsupported ASRE_DIAGNOSIS.protocol={protocol!r}; expected "
             f"one of {ROUND1_PROTOCOL!r}, {ROUND2_PROTOCOL!r}, or "
-            f"{ROUND3A_PROTOCOL!r}, or {ROUND3B_PROTOCOL!r}."
+            f"{ROUND3A_PROTOCOL!r}, {ROUND3B_PROTOCOL!r}, or {G0_PROTOCOL!r}."
         )
 
-    if protocol == ROUND3B_PROTOCOL and mode != "replace_video_kv":
+    replacement_protocols = {ROUND3B_PROTOCOL, G0_PROTOCOL}
+    if protocol in replacement_protocols and mode != "replace_video_kv":
         raise ValueError(
-            "ASRE Round-3B requires ASRE_DIAGNOSIS.mode='replace_video_kv'."
+            f"ASRE protocol {protocol!r} requires "
+            "ASRE_DIAGNOSIS.mode='replace_video_kv'."
         )
-    if protocol != ROUND3B_PROTOCOL and mode != "drop_video_kv":
+    if protocol not in replacement_protocols and mode != "drop_video_kv":
         raise ValueError(
             f"{protocol} requires ASRE_DIAGNOSIS.mode='drop_video_kv'."
         )
 
-    if protocol in {ROUND2_PROTOCOL, ROUND3A_PROTOCOL, ROUND3B_PROTOCOL}:
+    if protocol in {ROUND2_PROTOCOL, ROUND3A_PROTOCOL, ROUND3B_PROTOCOL, G0_PROTOCOL}:
         is_round2 = protocol == ROUND2_PROTOCOL
         is_round3a = protocol == ROUND3A_PROTOCOL
+        is_round3b = protocol == ROUND3B_PROTOCOL
         round_label = (
-            "Round-2" if is_round2 else "Round-3A" if is_round3a else "Round-3B"
+            "Round-2"
+            if is_round2
+            else "Round-3A"
+            if is_round3a
+            else "Round-3B"
+            if is_round3b
+            else "G0"
         )
         conditions = (
             build_round2_conditions(num_layers)
@@ -300,6 +334,8 @@ def resolve_condition(diagnosis_cfg: Mapping[str, Any], num_layers: int) -> Diag
             else build_round3a_conditions(num_layers)
             if is_round3a
             else build_round3b_conditions(num_layers)
+            if is_round3b
+            else build_g0_conditions(num_layers)
         )
         condition_index = diagnosis_cfg.get("condition_index")
         if condition_index is not None:

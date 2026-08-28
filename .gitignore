@@ -314,6 +314,27 @@ asre_results/round3b/**
 !asre_results/round3b/aggregate/plots/figure_D_offline_action_metrics.png
 !asre_results/round3b/aggregate/plots/figure_E_kv_scale_sanity.png
 
+# G0 keeps donor bundles, smoke/full rollouts, traces, logs, and machinery
+# working files local. Publish only the compact cross-suite aggregate.
+!asre_results/g0_cross_suite/
+asre_results/g0_cross_suite/**
+!asre_results/g0_cross_suite/aggregate/
+!asre_results/g0_cross_suite/aggregate/aggregate_metadata.json
+!asre_results/g0_cross_suite/aggregate/condition_summary.csv
+!asre_results/g0_cross_suite/aggregate/primary_contrasts.csv
+!asre_results/g0_cross_suite/aggregate/paired_transitions.csv
+!asre_results/g0_cross_suite/aggregate/task_success.csv
+!asre_results/g0_cross_suite/aggregate/cross_suite_descriptive.csv
+!asre_results/g0_cross_suite/aggregate/g0_summary.json
+!asre_results/g0_cross_suite/aggregate/g0_summary.md
+!asre_results/g0_cross_suite/aggregate/result_summary_for_gpt.md
+!asre_results/g0_cross_suite/aggregate/plots/
+!asre_results/g0_cross_suite/aggregate/plots/figure_A_grouped_success_rates.png
+!asre_results/g0_cross_suite/aggregate/plots/figure_B_primary_deltas.png
+!asre_results/g0_cross_suite/aggregate/plots/figure_C_new_suite_task_heatmap.png
+!asre_results/g0_cross_suite/aggregate/plots/figure_D_retrieval_schedule_schematic.png
+!asre_results/g0_cross_suite/aggregate/plots/figure_manifest.json
+
 # The repository-wide tests/ rule above would otherwise hide these new tests.
 !experiments/asre_diagnosis/tests/
 !experiments/asre_diagnosis/tests/*.py
