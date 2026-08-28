@@ -1,0 +1,64 @@
+{
+  "artifact_type": "asre_round3b_aggregate_metadata",
+  "bootstrap_samples": 10000,
+  "bootstrap_seed": 0,
+  "condition_protocol": "round3b_matched_kv_replacement",
+  "input_roots": {
+    "offline": "/home/zhaizicheng/Reasoning/FastWAM/asre_results/round3b/offline",
+    "online": "/home/zhaizicheng/Reasoning/FastWAM/asre_results/round3b/online_full"
+  },
+  "input_run_commits": {
+    "offline": {
+      "late_current_correct": "fbefcee942c0a40e9eb1f06e60a9a958dea3f2e1",
+      "late_no_video": "fbefcee942c0a40e9eb1f06e60a9a958dea3f2e1",
+      "late_wrong_scene": "fbefcee942c0a40e9eb1f06e60a9a958dea3f2e1"
+    },
+    "online": {
+      "late_current_correct": "fbefcee942c0a40e9eb1f06e60a9a958dea3f2e1",
+      "late_no_video": "fbefcee942c0a40e9eb1f06e60a9a958dea3f2e1",
+      "late_wrong_scene": "fbefcee942c0a40e9eb1f06e60a9a958dea3f2e1"
+    }
+  },
+  "outputs": {
+    "kv_scale_sanity.csv": "f92f8ef74279c8f556a2061c05afa1a504874fa4e87f242631ba83788a0ec515",
+    "offline_condition_metrics.csv": "f21eaad82a15766157752678af6c8e663d8865c2b27dc4921ce6efb5c7cc9dbb",
+    "offline_replan_stage_metrics.csv": "aab8a56e5aa34a20c80b3c543f36a130d4f4d135944c583d3345b9e013f52e11",
+    "offline_wrong_vs_correct.csv": "8cae1abbf156f69523338193321684121306d7de62cbb0d8ffaca54c5a88c5ce",
+    "offline_wrong_vs_correct_per_sample.csv": "937aafeae097fb01219f60392a97158e8a7251f0900b029ee5b95036236683d7",
+    "online_condition_summary.csv": "ab15afafa42f33b45b2f497bc89e9d533f0b2d55ba560c50867f3fb2511a502f",
+    "online_contrasts.csv": "ed389d904a6dd1e3bbf47d812a80d538ffd0ccfcba741e652b684366a57ef330",
+    "paired_transitions.csv": "e4d99315336c67a2563fda73fa57693dcb6f6fe3d3db6415d50effdc68677f5c",
+    "result_summary_for_gpt.md": "0c56ff3ace22a5d145647b4aac3b61bfde9cb915865203e51b37c96a465aadc3",
+    "round3b_summary.json": "1d7e602ef39fe46e82e3602bf1c485ef4ab33befd9bdd1fb5bdec4d1be3865ea",
+    "round3b_summary.md": "b0b1fe4242231fe62b9c265a300a55dcb3507e5bf795772d9201428165340e47",
+    "task_success.csv": "4147080622068df3b1eaa49f2a194deb413d8d80691cd16962ff0b12cb4ab79e"
+  },
+  "provenance": {
+    "checkpoint_path": "/local_home/zhaizicheng/fastwam_assets/checkpoints/fastwam_release/libero_uncond_2cam224.pt",
+    "checkpoint_sha256": "1000437cfcf55c000094f79a2600634c502bcb5b492476b94bf8509883a49579",
+    "cuda_version": "12.8",
+    "dataset_stats_path": "/local_home/zhaizicheng/fastwam_assets/checkpoints/fastwam_release/libero_uncond_2cam224_dataset_stats.json",
+    "dataset_stats_sha256": "30f81ad7d5076e97323e3328bce003e01a04cb21327b5bacd21bb72846768638",
+    "donor_mapping_path": "/home/zhaizicheng/Reasoning/FastWAM/asre_results/round3b/donors/online/donor_mapping.json",
+    "donor_mapping_sha256": "b072adef3aebda9e5449f6e9bc90baade8e84e4703c9fa500642157b59643a6c",
+    "donor_observation_manifest_path": "/home/zhaizicheng/Reasoning/FastWAM/asre_results/round3b/donors/online/donor_observation_manifest.json",
+    "donor_observation_manifest_sha256": "3a568b0a47e7cacf26914c881c859362d84743d4b5194017c5d126a0d85ba5bd",
+    "git_commit_hash": "fbefcee942c0a40e9eb1f06e60a9a958dea3f2e1",
+    "gpu_model": "NVIDIA RTX A5000",
+    "offline_donor_mapping_path": "/home/zhaizicheng/Reasoning/FastWAM/asre_results/round3b/donors/offline_donor_mapping.json",
+    "offline_donor_mapping_sha256": "a1bcdb3967d223f1e12bfd1817c58a515cea348984680f9b45571cff933b0221",
+    "prompt_context_cache_path": "/home/zhaizicheng/Reasoning/FastWAM/asre_results/round2/prompt_context_cache.pt",
+    "prompt_context_cache_sha256": "4eab1fbcede2efd6bba48a5bb3f9eaca0e9e94b03d05ceb497255d4dda82ba9a",
+    "round3a_parent_commit": "d36383c16d974ba1e5a750c088327a7a88baa8fb",
+    "round3a_parent_tag": "ASRE-round3a-factorial",
+    "self_replacement_result_path": "/home/zhaizicheng/Reasoning/FastWAM/asre_results/round3b/self_replacement/result.json",
+    "self_replacement_result_sha256": "4bdc6611ff26a76b336f9d83a5d3461e7ad272feb4d7ab290a37ed7c0e775363",
+    "state_bank_manifest_path": "/home/zhaizicheng/Reasoning/FastWAM/asre_results/state_bank/manifest.jsonl",
+    "state_bank_manifest_sha256": "ed582c1420a705b08105acc5481f93ef899d6677eefa48a78a3f6ed0b1f50ab8",
+    "torch_version": "2.7.1+cu128",
+    "valid_state_bank_manifest_path": "/home/zhaizicheng/Reasoning/FastWAM/asre_results/round2/state_bank_valid_manifest.json",
+    "valid_state_bank_manifest_sha256": "a05ebb6b50d64eb022103269a0eef595e749fe8c16e49e996ba08669f44378cd",
+    "validated_round3a_run_commit": "92e842c79f5209b31c2653944cc0c1719e95eb9e"
+  },
+  "schema_version": 1
+}

@@ -1,0 +1,13 @@
+comparison,reference_outcome,target_outcome,count
+wrong_minus_correct,1,1,0
+wrong_minus_correct,1,0,95
+wrong_minus_correct,0,1,0
+wrong_minus_correct,0,0,5
+no_video_minus_correct,1,1,0
+no_video_minus_correct,1,0,95
+no_video_minus_correct,0,1,0
+no_video_minus_correct,0,0,5
+wrong_minus_no_video,1,1,0
+wrong_minus_no_video,1,0,0
+wrong_minus_no_video,0,1,0
+wrong_minus_no_video,0,0,100

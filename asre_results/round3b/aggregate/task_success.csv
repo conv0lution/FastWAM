@@ -1,0 +1,11 @@
+task_id,task_description,late_current_correct,late_wrong_scene,late_no_video,wrong_minus_correct,no_video_minus_correct,wrong_minus_no_video
+0,pick up the black bowl between the plate and the ramekin and place it on the plate,1.0,0.0,0.0,-1.0,-1.0,0.0
+1,pick up the black bowl next to the ramekin and place it on the plate,0.8,0.0,0.0,-0.8,-0.8,0.0
+2,pick up the black bowl from table center and place it on the plate,1.0,0.0,0.0,-1.0,-1.0,0.0
+3,pick up the black bowl on the cookie box and place it on the plate,1.0,0.0,0.0,-1.0,-1.0,0.0
+4,pick up the black bowl in the top drawer of the wooden cabinet and place it on the plate,1.0,0.0,0.0,-1.0,-1.0,0.0
+5,pick up the black bowl on the ramekin and place it on the plate,0.9,0.0,0.0,-0.9,-0.9,0.0
+6,pick up the black bowl next to the cookie box and place it on the plate,1.0,0.0,0.0,-1.0,-1.0,0.0
+7,pick up the black bowl on the stove and place it on the plate,1.0,0.0,0.0,-1.0,-1.0,0.0
+8,pick up the black bowl next to the plate and place it on the plate,0.9,0.0,0.0,-0.9,-0.9,0.0
+9,pick up the black bowl on the wooden cabinet and place it on the plate,0.9,0.0,0.0,-0.9,-0.9,0.0

@@ -1,0 +1,4 @@
+condition,display_name,successes,episodes,success_rate,paired_ci_low,paired_ci_high,task_hierarchical_ci_low,task_hierarchical_ci_high
+late_current_correct,Correct Current K/V,95,100,0.95,0.9,0.99,0.8800000000000001,1.0
+late_wrong_scene,Wrong Same-Task Scene K/V,0,100,0.0,0.0,0.0,0.0,0.0
+late_no_video,No Video K/V,0,100,0.0,0.0,0.0,0.0,0.0

@@ -1,0 +1,4 @@
+comparison,reference_condition,target_condition,reference_success_rate,target_success_rate,delta_success_rate,paired_ci_low,paired_ci_high,task_hierarchical_ci_low,task_hierarchical_ci_high,reference_success_to_target_success,reference_success_to_target_failure,reference_failure_to_target_success,reference_failure_to_target_failure,induced_failures,rescued_successes,discordant_pairs,mcnemar_exact_p_value,paired_episodes
+wrong_minus_correct,late_current_correct,late_wrong_scene,0.95,0.0,-0.95,-0.99,-0.9,-1.0,-0.8800000000000001,0,95,0,5,95,0,95,5.048709793414476e-29,100
+no_video_minus_correct,late_current_correct,late_no_video,0.95,0.0,-0.95,-0.99,-0.9,-1.0,-0.8800000000000001,0,95,0,5,95,0,95,5.048709793414476e-29,100
+wrong_minus_no_video,late_no_video,late_wrong_scene,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0,0,0,100,0,0,0,1.0,100
