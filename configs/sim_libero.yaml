@@ -98,6 +98,7 @@ ASRE_DIAGNOSIS:
   g0_parent_commit: null
   g0_summary_path: null
   g0_summary_sha256: null
+  g0_gate_classification: null
 
 MULTIRUN:
   create_only: false

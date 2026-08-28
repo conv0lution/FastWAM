@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
+from omegaconf import OmegaConf
 
 from experiments.asre_diagnosis.common import ROUND4A_PROTOCOL, build_round4a_conditions
 from experiments.asre_diagnosis.round4a.aggregate_results import (
@@ -268,3 +269,11 @@ def test_round4a_output_scope_protects_stage1_and_g0() -> None:
         _require_output_scope(Path("asre_results/round3b/never"))
     with pytest.raises(ValueError, match="must be"):
         _require_output_scope(Path("asre_results/g0_cross_suite/never"))
+
+
+def test_round4a_runtime_provenance_fields_are_declared_in_struct_config() -> None:
+    project_root = Path(__file__).resolve().parents[3]
+    cfg = OmegaConf.load(project_root / "configs/sim_libero.yaml")
+    OmegaConf.set_struct(cfg, True)
+    cfg.ASRE_DIAGNOSIS.g0_gate_classification = "g0-strong"
+    assert cfg.ASRE_DIAGNOSIS.g0_gate_classification == "g0-strong"
