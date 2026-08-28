@@ -15,6 +15,7 @@ import shlex
 import signal
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -148,6 +149,15 @@ def _parse_args() -> argparse.Namespace:
             "0 1 2. Each child still sees only logical cuda:0."
         ),
     )
+    parser.add_argument(
+        "--launch-stagger-seconds",
+        type=float,
+        default=0.0,
+        help=(
+            "Delay between child launches to avoid simultaneous host-memory peaks; "
+            "recorded in launcher provenance."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -160,6 +170,15 @@ def _validate_gpu_ids(values: Sequence[int]) -> tuple[int, int, int]:
     if len(set(gpu_ids)) != len(gpu_ids):
         raise ValueError(f"Round-3B requires three distinct physical GPUs, got {gpu_ids}.")
     return gpu_ids
+
+
+def _validate_launch_stagger(value: float) -> float:
+    stagger = float(value)
+    if not math.isfinite(stagger) or stagger < 0.0:
+        raise ValueError(
+            f"--launch-stagger-seconds must be finite and nonnegative, got {value}."
+        )
+    return stagger
 
 
 def _gpu_inventory() -> list[dict[str, Any]]:
@@ -721,6 +740,7 @@ def _root_identity(
     python_path: Path,
     gpu_inventory: Sequence[Mapping[str, Any]],
     gpu_ids: Sequence[int],
+    launch_stagger_seconds: float,
 ) -> dict[str, Any]:
     conditions = build_round3b_conditions(NUM_LAYERS)
     payload: dict[str, Any] = {
@@ -738,6 +758,7 @@ def _root_identity(
         "git_commit_hash": git_commit(project_root),
         "python": str(python_path),
         "gpu_ids": list(gpu_ids),
+        "launch_stagger_seconds": launch_stagger_seconds,
         "provenance": provenance.identity_dict(),
         "conditions": [
             {
@@ -864,6 +885,7 @@ def _validate_smoke_gate(
     provenance: Provenance,
     task_config: str,
     gpu_ids: Sequence[int],
+    launch_stagger_seconds: float,
 ) -> None:
     if path is None:
         raise ValueError("--mode full requires --smoke-summary.")
@@ -882,6 +904,7 @@ def _validate_smoke_gate(
         "seed": SEED,
         "git_commit_hash": git_commit(project_root),
         "gpu_ids": list(gpu_ids),
+        "launch_stagger_seconds": launch_stagger_seconds,
         "provenance": provenance.identity_dict(),
         "expected_conditions": names,
     }
@@ -923,6 +946,7 @@ def _validate_smoke_gate(
 def _status_payload(
     condition_index: int,
     physical_gpu: int,
+    launch_stagger_seconds: float,
     condition: DiagnosisCondition,
     mode: str,
     output_dir: Path,
@@ -946,6 +970,7 @@ def _status_payload(
         "disabled_video_layers": list(condition.disabled_video_layers),
         "replacement_video_layers": list(condition.replacement_video_layers),
         "physical_gpu": physical_gpu,
+        "launch_stagger_seconds": launch_stagger_seconds,
         "gpu": dict(gpu_record),
         "cuda_visible_devices": str(physical_gpu),
         "model_device": "cuda:0",
@@ -960,6 +985,7 @@ def _launch_condition(
     *,
     condition_index: int,
     physical_gpu: int,
+    launch_stagger_seconds: float,
     condition: DiagnosisCondition,
     output_root: Path,
     python_path: Path,
@@ -1002,6 +1028,7 @@ def _launch_condition(
     status = _status_payload(
         condition_index,
         physical_gpu,
+        launch_stagger_seconds,
         condition,
         mode,
         condition_output,
@@ -1117,6 +1144,7 @@ def _write_summary(
     interrupted: bool,
     start: str,
     gpu_ids: Sequence[int],
+    launch_stagger_seconds: float,
 ) -> Path:
     path = output_root / SUMMARY_NAME
     atomic_write_json(
@@ -1134,6 +1162,7 @@ def _write_summary(
             "seed": SEED,
             "git_commit_hash": git_commit(project_root),
             "gpu_ids": list(gpu_ids),
+            "launch_stagger_seconds": launch_stagger_seconds,
             "provenance": provenance.identity_dict(),
             "expected_conditions": [
                 condition.name for condition in build_round3b_conditions(NUM_LAYERS)
@@ -1158,9 +1187,14 @@ def _main_locked(
     provenance = _load_provenance(args) if provenance is None else provenance
     runtime = _resolve_runtime(args.task_config, args.mode)
     gpu_ids = _validate_gpu_ids(args.gpu_ids)
+    launch_stagger_seconds = _validate_launch_stagger(args.launch_stagger_seconds)
     if args.mode == "full":
         _validate_smoke_gate(
-            args.smoke_summary, provenance, args.task_config, gpu_ids
+            args.smoke_summary,
+            provenance,
+            args.task_config,
+            gpu_ids,
+            launch_stagger_seconds,
         )
     elif args.smoke_summary is not None:
         raise ValueError("--smoke-summary is only valid for --mode full.")
@@ -1173,6 +1207,7 @@ def _main_locked(
         python_path=python_path,
         gpu_inventory=gpu_inventory,
         gpu_ids=gpu_ids,
+        launch_stagger_seconds=launch_stagger_seconds,
     )
     _prepare_output_root(output_root, identity)
     _validate_root_layout(output_root)
@@ -1208,6 +1243,7 @@ def _main_locked(
             interrupted=False,
             start=start,
             gpu_ids=gpu_ids,
+            launch_stagger_seconds=launch_stagger_seconds,
         ))
         return
 
@@ -1215,13 +1251,19 @@ def _main_locked(
     interrupted = False
     failure: BaseException | None = None
     try:
+        launch_items = [
+            (index, condition)
+            for index, condition in enumerate(conditions)
+            if inspections[index].state != "complete"
+        ]
         for index, condition in enumerate(conditions):
             if inspections[index].state == "complete":
                 print(f"Skipping completed {condition.name}.", flush=True)
-                continue
+        for launch_offset, (index, condition) in enumerate(launch_items):
             launched = _launch_condition(
                 condition_index=index,
                 physical_gpu=gpu_ids[index],
+                launch_stagger_seconds=launch_stagger_seconds,
                 condition=condition,
                 output_root=output_root,
                 python_path=python_path,
@@ -1237,6 +1279,16 @@ def _main_locked(
                 f"{launched.log_path}",
                 flush=True,
             )
+            if (
+                launch_stagger_seconds > 0.0
+                and launch_offset + 1 < len(launch_items)
+            ):
+                print(
+                    f"Waiting {launch_stagger_seconds:g}s before the next child "
+                    "to limit host-memory launch pressure.",
+                    flush=True,
+                )
+                time.sleep(launch_stagger_seconds)
         for process in live:
             code = process.process.wait()
             _finish(process, code)
@@ -1280,6 +1332,7 @@ def _main_locked(
         interrupted=interrupted,
         start=start,
         gpu_ids=gpu_ids,
+        launch_stagger_seconds=launch_stagger_seconds,
     )
     print(f"Launcher summary: {summary}")
     if interrupted:

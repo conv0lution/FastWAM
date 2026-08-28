@@ -38,6 +38,7 @@ from experiments.asre_diagnosis.round3b.launch_three_gpu import (
     _resolve_runtime,
     _selected_gpu_records,
     _status_payload,
+    _validate_launch_stagger,
     _validate_action_traces,
     _validate_gpu_ids,
 )
@@ -83,6 +84,7 @@ class Round3BLauncherTest(unittest.TestCase):
         payload = _status_payload(
             1,
             5,
+            70.0,
             condition,
             "smoke",
             Path("/output"),
@@ -94,6 +96,11 @@ class Round3BLauncherTest(unittest.TestCase):
         self.assertEqual(payload["physical_gpu"], 5)
         self.assertEqual(payload["cuda_visible_devices"], "5")
         self.assertEqual(payload["mujoco_egl_device_id"], "5")
+        self.assertEqual(payload["launch_stagger_seconds"], 70.0)
+        self.assertEqual(_validate_launch_stagger(70), 70.0)
+        for invalid_stagger in (-1, float("inf"), float("nan")):
+            with self.assertRaises(ValueError):
+                _validate_launch_stagger(invalid_stagger)
 
         inventory = [
             {"index": index, "name": "NVIDIA RTX A5000"}

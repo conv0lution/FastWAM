@@ -35,9 +35,14 @@ order, for example:
 
 ```bash
 ROUND3B_GPU_IDS=4,5,6 \
+ROUND3B_LAUNCH_STAGGER_SECONDS=70 \
 ./experiments/asre_diagnosis/round3b/run_full_experiment.sh \
   2>&1 | tee asre_results/round3b/logs/driver.log
 ```
+
+The optional stagger only separates host-side model construction to reduce
+peak RAM pressure. The three conditions still use isolated GPUs and overlap
+during the substantive rollout.
 
 The driver validates the frozen Round-3A parent, captures and freezes donor
 observations, runs the same-input numerical identity gate, replays the exact

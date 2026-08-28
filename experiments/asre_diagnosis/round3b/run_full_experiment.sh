@@ -28,6 +28,7 @@ OFFLINE_ROOT="${ROUND3B_ROOT}/offline"
 AGGREGATE_ROOT="${ROUND3B_ROOT}/aggregate"
 LOG_ROOT="${ROUND3B_ROOT}/logs"
 ROUND3B_GPU_IDS="${ROUND3B_GPU_IDS:-0,1,2}"
+ROUND3B_LAUNCH_STAGGER_SECONDS="${ROUND3B_LAUNCH_STAGGER_SECONDS:-0}"
 IFS=',' read -r -a physical_gpus <<<"${ROUND3B_GPU_IDS}"
 if [[ "${#physical_gpus[@]}" -ne 3 || \
       ! "${physical_gpus[0]}" =~ ^[0-9]+$ || \
@@ -144,6 +145,7 @@ launch_args=(
   --task-config libero_uncond_2cam224_1e-4
   --python "${PYTHON_BIN}"
   --gpu-ids "${physical_gpus[@]}"
+  --launch-stagger-seconds "${ROUND3B_LAUNCH_STAGGER_SECONDS}"
 )
 
 printf '6/9 Running task-0 two-trial smoke for all three conditions.\n'
