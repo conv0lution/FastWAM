@@ -40,7 +40,6 @@ from experiments.asre_diagnosis.round3a.launch_three_gpu import (  # noqa: E402
     RuntimeSpec,
     _child_environment,
     _exclusive_launcher_lock,
-    _gpu_inventory,
     _metadata_mismatches,
     _read_json,
     _recorded_live_pid,
@@ -161,6 +160,58 @@ def _validate_gpu_ids(values: Sequence[int]) -> tuple[int, int, int]:
     if len(set(gpu_ids)) != len(gpu_ids):
         raise ValueError(f"Round-3B requires three distinct physical GPUs, got {gpu_ids}.")
     return gpu_ids
+
+
+def _gpu_inventory() -> list[dict[str, Any]]:
+    command = [
+        "nvidia-smi",
+        "--query-gpu=index,name,uuid,pci.bus_id,driver_version,memory.total,memory.free",
+        "--format=csv,noheader,nounits",
+    ]
+    try:
+        output = subprocess.check_output(command, text=True, stderr=subprocess.STDOUT)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise RuntimeError(f"Cannot query physical GPUs with nvidia-smi: {exc}") from exc
+    records: list[dict[str, Any]] = []
+    for line in output.splitlines():
+        if not line.strip():
+            continue
+        fields = [field.strip() for field in line.split(",")]
+        if len(fields) != 7:
+            raise RuntimeError(f"Unexpected nvidia-smi output: {line!r}")
+        records.append(
+            {
+                "index": int(fields[0]),
+                "name": fields[1],
+                "uuid": fields[2],
+                "pci_bus_id": fields[3],
+                "driver_version": fields[4],
+                "memory_total_mib": int(fields[5]),
+                "memory_free_mib_at_preflight": int(fields[6]),
+            }
+        )
+    if not records:
+        raise RuntimeError("nvidia-smi returned no physical GPUs.")
+    return records
+
+
+def _selected_gpu_records(
+    gpu_inventory: Sequence[Mapping[str, Any]], gpu_ids: Sequence[int]
+) -> dict[int, Mapping[str, Any]]:
+    inventory_by_index = {int(record["index"]): record for record in gpu_inventory}
+    missing_gpu_ids = [gpu_id for gpu_id in gpu_ids if gpu_id not in inventory_by_index]
+    if missing_gpu_ids:
+        raise ValueError(
+            f"Requested physical GPUs are absent from inventory: {missing_gpu_ids}."
+        )
+    selected = {gpu_id: inventory_by_index[gpu_id] for gpu_id in gpu_ids}
+    names = {str(record["name"]) for record in selected.values()}
+    if len(names) != 1 or not all("A5000" in name for name in names):
+        raise ValueError(
+            "Round-3B requires three identical NVIDIA RTX A5000 GPUs; "
+            f"observed models={sorted(names)}."
+        )
+    return selected
 
 
 def _resolve_path(value: str | Path, *, label: str, file: bool = True) -> Path:
@@ -1114,12 +1165,7 @@ def _main_locked(
     elif args.smoke_summary is not None:
         raise ValueError("--smoke-summary is only valid for --mode full.")
     gpu_inventory = _gpu_inventory()
-    inventory_by_index = {int(record["index"]): record for record in gpu_inventory}
-    missing_gpu_ids = [gpu_id for gpu_id in gpu_ids if gpu_id not in inventory_by_index]
-    if missing_gpu_ids:
-        raise ValueError(
-            f"Requested physical GPUs are absent from inventory: {missing_gpu_ids}."
-        )
+    selected_gpu_records = _selected_gpu_records(gpu_inventory, gpu_ids)
     identity = _root_identity(
         mode=args.mode,
         runtime=runtime,
@@ -1182,7 +1228,7 @@ def _main_locked(
                 runtime=runtime,
                 provenance=provenance,
                 mode=args.mode,
-                gpu_record=inventory_by_index[gpu_ids[index]],
+                gpu_record=selected_gpu_records[gpu_ids[index]],
                 launcher_lock_fd=launcher_lock_fd,
             )
             live.append(launched)

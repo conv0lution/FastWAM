@@ -36,6 +36,7 @@ from experiments.asre_diagnosis.round3b.launch_three_gpu import (
     _condition_command,
     _require_clean_worktree,
     _resolve_runtime,
+    _selected_gpu_records,
     _status_payload,
     _validate_action_traces,
     _validate_gpu_ids,
@@ -93,6 +94,15 @@ class Round3BLauncherTest(unittest.TestCase):
         self.assertEqual(payload["physical_gpu"], 5)
         self.assertEqual(payload["cuda_visible_devices"], "5")
         self.assertEqual(payload["mujoco_egl_device_id"], "5")
+
+        inventory = [
+            {"index": index, "name": "NVIDIA RTX A5000"}
+            for index in range(8)
+        ]
+        selected = _selected_gpu_records(inventory, (4, 5, 6))
+        self.assertEqual(tuple(selected), (4, 5, 6))
+        with self.assertRaisesRegex(ValueError, "absent"):
+            _selected_gpu_records(inventory, (4, 5, 8))
 
     def test_runtime_and_conditions_are_exactly_frozen(self) -> None:
         smoke = _resolve_runtime("libero_uncond_2cam224_1e-4", "smoke")
