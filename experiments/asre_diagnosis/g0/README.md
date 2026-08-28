@@ -54,6 +54,20 @@ The four values map to the condition slots in table order and the physical GPU
 inventory is frozen in launcher provenance. Each selected card must have at
 least 22000 MiB free at launch.
 
+The same formal command is also available as:
+
+```bash
+./experiments/asre_diagnosis/g0/run_full_experiment.sh
+```
+
+To preserve an earlier failed attempt while starting from a newly committed
+revision, choose a child output directory:
+
+```bash
+G0_OUTPUT_ROOT="$PWD/asre_results/g0_cross_suite/retry_YYYYMMDD" \
+  ./experiments/asre_diagnosis/g0/run_full_experiment.sh
+```
+
 For development-only suite/config inspection on an uncommitted checkout:
 
 ```bash

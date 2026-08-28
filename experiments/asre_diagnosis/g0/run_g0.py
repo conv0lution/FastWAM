@@ -23,6 +23,7 @@ from experiments.asre_diagnosis.g0.definitions import (
     assert_output_scope,
     validate_gpu_mapping,
 )
+from experiments.asre_diagnosis.g0.preflight import validate_git_state
 
 
 def _read_json(path: Path, label: str) -> dict[str, Any]:
@@ -35,7 +36,7 @@ def _read_json(path: Path, label: str) -> dict[str, Any]:
     return payload
 
 
-def _base_environment(output_root: Path) -> dict[str, str]:
+def _base_environment(output_root: Path, rendering_gpu: int) -> dict[str, str]:
     environment = os.environ.copy()
     libero_root = Path(
         environment.get("LIBERO_ROOT", str(project_root.parent / "LIBERO"))
@@ -49,11 +50,14 @@ def _base_environment(output_root: Path) -> dict[str, str]:
     numba_root.mkdir(parents=True, exist_ok=True)
     environment.update(
         {
+            "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
+            "CUDA_VISIBLE_DEVICES": str(rendering_gpu),
             "PYTHONPATH": os.pathsep.join(python_entries),
             "PYTHONUNBUFFERED": "1",
             "HYDRA_FULL_ERROR": "1",
             "MUJOCO_GL": "egl",
             "PYOPENGL_PLATFORM": "egl",
+            "MUJOCO_EGL_DEVICE_ID": str(rendering_gpu),
             "MPLCONFIGDIR": str(matplotlib_root),
             "NUMBA_CACHE_DIR": str(numba_root),
         }
@@ -130,13 +134,13 @@ def run_driver(args: argparse.Namespace) -> None:
     valid_manifest = args.valid_manifest.expanduser().resolve()
     state_bank_dir = args.state_bank_dir.expanduser().resolve()
     gpu_ids = validate_gpu_mapping(args.gpu_ids)
-    environment = _base_environment(output_root)
-    environment["MUJOCO_EGL_DEVICE_ID"] = str(gpu_ids[0])
+    environment = _base_environment(output_root, gpu_ids[0])
     logs = output_root / "logs"
     preflight = output_root / "preflight_report.json"
     machinery = output_root / "machinery_report.json"
 
     if preflight.exists():
+        validate_git_state(allow_dirty=args.allow_dirty)
         _validate_existing_preflight(
             preflight, checkpoint, dataset_stats, allow_dirty=args.allow_dirty
         )

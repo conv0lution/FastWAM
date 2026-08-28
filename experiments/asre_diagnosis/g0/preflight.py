@@ -51,7 +51,7 @@ def _tag_commit(tag: str) -> str:
     return _git("rev-list", "-n", "1", tag)
 
 
-def _validate_git(*, allow_dirty: bool) -> dict[str, Any]:
+def validate_git_state(*, allow_dirty: bool) -> dict[str, Any]:
     tags = sorted(
         tag for tag in _git("tag", "--list").splitlines() if "asre" in tag.lower()
     )
@@ -183,7 +183,7 @@ def run_preflight(
         "schema_version": 1,
         "status": "compatible",
         "created_at": now_iso(),
-        "git": _validate_git(allow_dirty=allow_dirty),
+        "git": validate_git_state(allow_dirty=allow_dirty),
         "checkpoint": _validate_file(checkpoint, label="Fast-WAM LIBERO checkpoint"),
         "dataset_statistics": _validate_file(
             dataset_stats, label="LIBERO dataset statistics"
