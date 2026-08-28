@@ -17,6 +17,19 @@ VALID_MANIFEST="${ROUND2_ROOT}/state_bank_valid_manifest.json"
 OUTPUT_ROOT="${ROUND3B_ROOT}/offline"
 DONOR_MAPPING="${ROUND3B_ROOT}/donors/offline_donor_mapping.json"
 LOG_ROOT="${ROUND3B_ROOT}/logs/offline"
+ROUND3B_GPU_IDS="${ROUND3B_GPU_IDS:-0,1,2}"
+IFS=',' read -r -a physical_gpus <<<"${ROUND3B_GPU_IDS}"
+if [[ "${#physical_gpus[@]}" -ne 3 || \
+      ! "${physical_gpus[0]}" =~ ^[0-9]+$ || \
+      ! "${physical_gpus[1]}" =~ ^[0-9]+$ || \
+      ! "${physical_gpus[2]}" =~ ^[0-9]+$ || \
+      "${physical_gpus[0]}" == "${physical_gpus[1]}" || \
+      "${physical_gpus[0]}" == "${physical_gpus[2]}" || \
+      "${physical_gpus[1]}" == "${physical_gpus[2]}" ]]; then
+  printf 'ROUND3B_GPU_IDS must contain three distinct nonnegative integers: %s\n' \
+    "${ROUND3B_GPU_IDS}" >&2
+  exit 1
+fi
 
 LIBERO_ROOT="${LIBERO_ROOT:-${REPO_ROOT}/../LIBERO}"
 export PYTHONPATH="${REPO_ROOT}/src:${REPO_ROOT}:${LIBERO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
@@ -81,21 +94,22 @@ replacement_layers=(
 condition_complete() {
   local condition="$1"
   local index="$2"
+  local physical_gpu="$3"
   "${PYTHON_BIN}" -c \
     'import json,pathlib,sys
-root,condition,index=sys.argv[1],sys.argv[2],int(sys.argv[3])
+root,condition,index,physical_gpu=sys.argv[1],sys.argv[2],int(sys.argv[3]),int(sys.argv[4])
 path=pathlib.Path(root)/condition
 try:
     meta=json.loads((path/"run_metadata.json").read_text(encoding="utf-8"))
     records=[json.loads(line) for line in (path/"per_sample.jsonl").read_text(encoding="utf-8").splitlines() if line]
     ok=(meta.get("status")=="complete" and meta.get("condition_protocol")=="round3b_matched_kv_replacement"
-        and meta.get("diagnosis_condition")==condition and meta.get("physical_gpu")==index
+        and meta.get("diagnosis_condition")==condition and meta.get("physical_gpu")==physical_gpu
         and len(records)==499 and (path/"summary.csv").stat().st_size>0
         and (path/"actions.npz").stat().st_size>0)
 except (OSError,ValueError,TypeError,json.JSONDecodeError):
     ok=False
 sys.exit(0 if ok else 1)' \
-    "${OUTPUT_ROOT}" "${condition}" "${index}"
+    "${OUTPUT_ROOT}" "${condition}" "${index}" "${physical_gpu}"
 }
 
 mkdir -p "${OUTPUT_ROOT}" "${LOG_ROOT}"
@@ -103,7 +117,8 @@ pids=()
 launched_indices=()
 for index in 0 1 2; do
   condition="${conditions[$index]}"
-  if condition_complete "${condition}" "${index}"; then
+  physical_gpu="${physical_gpus[$index]}"
+  if condition_complete "${condition}" "${index}" "${physical_gpu}"; then
     printf 'Skipping complete Round-3B offline condition: %s\n' "${condition}"
     continue
   fi
@@ -119,7 +134,8 @@ for index in 0 1 2; do
     exit 1
   fi
   CUDA_DEVICE_ORDER=PCI_BUS_ID \
-  CUDA_VISIBLE_DEVICES="${index}" \
+  CUDA_VISIBLE_DEVICES="${physical_gpu}" \
+  ASRE_ROUND3B_PHYSICAL_GPU="${physical_gpu}" \
   "${PYTHON_BIN}" experiments/asre_diagnosis/round3b/replay_state_bank.py \
     task=libero_uncond_2cam224_1e-4 \
     "ckpt=${CHECKPOINT}" \
@@ -145,7 +161,7 @@ for index in 0 1 2; do
   pids+=("$!")
   launched_indices+=("${index}")
   printf 'Launched offline %s on physical GPU %s; log=%s\n' \
-    "${condition}" "${index}" "${log_path}"
+    "${condition}" "${physical_gpu}" "${log_path}"
 done
 
 status=0
@@ -154,7 +170,7 @@ for offset in "${!pids[@]}"; do
   index="${launched_indices[$offset]}"
   if ! wait "${pid}"; then
     printf 'Offline condition failed: %s (GPU %s).\n' \
-      "${conditions[$index]}" "${index}" >&2
+      "${conditions[$index]}" "${physical_gpus[$index]}" >&2
     status=1
   fi
 done
@@ -163,7 +179,8 @@ if [[ "${status}" -ne 0 ]]; then
   exit "${status}"
 fi
 for index in 0 1 2; do
-  if ! condition_complete "${conditions[$index]}" "${index}"; then
+  if ! condition_complete \
+      "${conditions[$index]}" "${index}" "${physical_gpus[$index]}"; then
     printf 'Offline validation failed after replay: %s.\n' "${conditions[$index]}" >&2
     exit 1
   fi

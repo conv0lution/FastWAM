@@ -370,10 +370,17 @@ def replay_state_bank(cfg: DictConfig) -> None:
     condition = resolve_condition(diagnosis_cfg, num_layers)
     condition_index = build_round3b_conditions(num_layers).index(condition)
     cuda_visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES")
-    if cuda_visible_devices != str(condition_index):
+    physical_gpu_value = os.environ.get("ASRE_ROUND3B_PHYSICAL_GPU")
+    if physical_gpu_value is None or not physical_gpu_value.isdigit():
         raise ValueError(
-            "Round-3B offline GPU mapping is condition 0/1/2 -> physical GPU 0/1/2; "
-            f"condition={condition.name}, expected {condition_index}, got "
+            "Round-3B offline replay requires ASRE_ROUND3B_PHYSICAL_GPU to "
+            "record the assigned physical device."
+        )
+    physical_gpu = int(physical_gpu_value)
+    if cuda_visible_devices != str(physical_gpu):
+        raise ValueError(
+            "Round-3B offline GPU assignment disagrees with CUDA visibility; "
+            f"condition={condition.name}, expected physical GPU {physical_gpu}, got "
             f"CUDA_VISIBLE_DEVICES={cuda_visible_devices!r}."
         )
     if str(model_device) != "cuda:0":
@@ -449,7 +456,7 @@ def replay_state_bank(cfg: DictConfig) -> None:
             "rand_device": source_compatibility["rand_device"],
             "text_conditioning_source": "stored_round1_state_bank_context",
             "condition_index": condition_index,
-            "physical_gpu": condition_index,
+            "physical_gpu": physical_gpu,
             "cuda_visible_devices": cuda_visible_devices,
             "model_device": str(model_device),
             "round3a_parent_tag": "ASRE-round3a-factorial",

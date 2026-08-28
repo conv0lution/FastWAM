@@ -27,6 +27,19 @@ FULL_ROOT="${ROUND3B_ROOT}/online_full"
 OFFLINE_ROOT="${ROUND3B_ROOT}/offline"
 AGGREGATE_ROOT="${ROUND3B_ROOT}/aggregate"
 LOG_ROOT="${ROUND3B_ROOT}/logs"
+ROUND3B_GPU_IDS="${ROUND3B_GPU_IDS:-0,1,2}"
+IFS=',' read -r -a physical_gpus <<<"${ROUND3B_GPU_IDS}"
+if [[ "${#physical_gpus[@]}" -ne 3 || \
+      ! "${physical_gpus[0]}" =~ ^[0-9]+$ || \
+      ! "${physical_gpus[1]}" =~ ^[0-9]+$ || \
+      ! "${physical_gpus[2]}" =~ ^[0-9]+$ || \
+      "${physical_gpus[0]}" == "${physical_gpus[1]}" || \
+      "${physical_gpus[0]}" == "${physical_gpus[2]}" || \
+      "${physical_gpus[1]}" == "${physical_gpus[2]}" ]]; then
+  printf 'ROUND3B_GPU_IDS must contain three distinct nonnegative integers: %s\n' \
+    "${ROUND3B_GPU_IDS}" >&2
+  exit 1
+fi
 
 LIBERO_ROOT="${LIBERO_ROOT:-${REPO_ROOT}/../LIBERO}"
 export PYTHONPATH="${REPO_ROOT}/src:${REPO_ROOT}:${LIBERO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
@@ -97,10 +110,11 @@ printf '3/9 Freezing the full donor-aware preflight report.\n'
   --donor-observation-root "${ONLINE_DONOR_ROOT}" \
   --output-report "${PREFLIGHT_REPORT}"
 
-printf '4/9 Running the mandatory same-input replacement identity gate on GPU 0.\n'
+printf '4/9 Running the mandatory same-input replacement identity gate on GPU %s.\n' \
+  "${physical_gpus[0]}"
 mkdir -p "$(dirname -- "${SELF_REPORT}")"
 CUDA_DEVICE_ORDER=PCI_BUS_ID \
-CUDA_VISIBLE_DEVICES=0 \
+CUDA_VISIBLE_DEVICES="${physical_gpus[0]}" \
 "${PYTHON_BIN}" experiments/asre_diagnosis/round3b/self_replacement_test.py \
   --checkpoint "${CHECKPOINT}" \
   --dataset-stats "${DATASET_STATS}" \
@@ -109,11 +123,13 @@ CUDA_VISIBLE_DEVICES=0 \
   --output "${SELF_REPORT}" \
   --task-config libero_uncond_2cam224_1e-4
 
-printf '5/9 Running the exact 499-state offline control on GPUs 0/1/2.\n'
+printf '5/9 Running the exact 499-state offline control on GPUs %s.\n' \
+  "${ROUND3B_GPU_IDS}"
 ASRE_ROUND3B_OUTPUT_ROOT="${ROUND3B_ROOT}" \
 CHECKPOINT="${CHECKPOINT}" \
 DATASET_STATS="${DATASET_STATS}" \
 PYTHON_BIN="${PYTHON_BIN}" \
+ROUND3B_GPU_IDS="${ROUND3B_GPU_IDS}" \
 "${SCRIPT_DIR}/run_offline.sh"
 
 launch_args=(
@@ -127,6 +143,7 @@ launch_args=(
   --self-replacement-report "${SELF_REPORT}"
   --task-config libero_uncond_2cam224_1e-4
   --python "${PYTHON_BIN}"
+  --gpu-ids "${physical_gpus[@]}"
 )
 
 printf '6/9 Running task-0 two-trial smoke for all three conditions.\n'

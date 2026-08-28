@@ -1,7 +1,8 @@
 """Launch the frozen ASRE Round-3B three-arm control on three isolated GPUs.
 
 The launcher is fail-closed around provenance and output reuse.  It never uses
-DDP: condition index 0/1/2 owns physical GPU 0/1/2 and sees it as ``cuda:0``.
+DDP: each condition owns one explicitly recorded physical GPU and sees it as
+``cuda:0``.
 """
 
 from __future__ import annotations
@@ -65,6 +66,7 @@ ACTION_HORIZON = 32
 REPLAN_STEPS = 10
 INFERENCE_STEPS = 10
 CONDITION_INDICES = (0, 1, 2)
+DEFAULT_GPU_IDS = CONDITION_INDICES
 ROOT_CONFIG_NAME = "launcher_config.json"
 SUMMARY_NAME = "launcher_summary.json"
 STATUS_NAME = "launcher_status.json"
@@ -106,6 +108,7 @@ class Provenance:
 @dataclass
 class LiveProcess:
     condition_index: int
+    physical_gpu: int
     condition: DiagnosisCondition
     process: subprocess.Popen[Any]
     log_handle: Any
@@ -135,7 +138,29 @@ def _parse_args() -> argparse.Namespace:
         default="libero_uncond_2cam224_1e-4",
     )
     parser.add_argument("--python", default=sys.executable)
+    parser.add_argument(
+        "--gpu-ids",
+        nargs=3,
+        type=int,
+        default=DEFAULT_GPU_IDS,
+        metavar=("GPU_FOR_CORRECT", "GPU_FOR_WRONG", "GPU_FOR_NO_VIDEO"),
+        help=(
+            "Three distinct physical GPU indices in condition order; defaults to "
+            "0 1 2. Each child still sees only logical cuda:0."
+        ),
+    )
     return parser.parse_args()
+
+
+def _validate_gpu_ids(values: Sequence[int]) -> tuple[int, int, int]:
+    gpu_ids = tuple(int(value) for value in values)
+    if len(gpu_ids) != len(CONDITION_INDICES):
+        raise ValueError(f"Round-3B requires exactly three GPU IDs, got {gpu_ids}.")
+    if any(value < 0 for value in gpu_ids):
+        raise ValueError(f"GPU IDs must be nonnegative, got {gpu_ids}.")
+    if len(set(gpu_ids)) != len(gpu_ids):
+        raise ValueError(f"Round-3B requires three distinct physical GPUs, got {gpu_ids}.")
+    return gpu_ids
 
 
 def _resolve_path(value: str | Path, *, label: str, file: bool = True) -> Path:
@@ -565,6 +590,7 @@ def _inspect_condition_dir(
     condition_dir: Path,
     *,
     condition_index: int,
+    physical_gpu: int,
     condition: DiagnosisCondition,
     runtime: RuntimeSpec,
     provenance: Provenance,
@@ -585,7 +611,7 @@ def _inspect_condition_dir(
                 "protocol": ROUND3B_PROTOCOL,
                 "condition": condition.name,
                 "condition_index": condition_index,
-                "physical_gpu": condition_index,
+                "physical_gpu": physical_gpu,
                 "replacement_video_layers": list(condition.replacement_video_layers),
             },
         )
@@ -643,6 +669,7 @@ def _root_identity(
     provenance: Provenance,
     python_path: Path,
     gpu_inventory: Sequence[Mapping[str, Any]],
+    gpu_ids: Sequence[int],
 ) -> dict[str, Any]:
     conditions = build_round3b_conditions(NUM_LAYERS)
     payload: dict[str, Any] = {
@@ -659,12 +686,13 @@ def _root_identity(
         "inference_steps": runtime.inference_steps,
         "git_commit_hash": git_commit(project_root),
         "python": str(python_path),
+        "gpu_ids": list(gpu_ids),
         "provenance": provenance.identity_dict(),
         "conditions": [
             {
                 "condition_index": index,
                 "condition": condition.name,
-                "physical_gpu": index,
+                "physical_gpu": gpu_ids[index],
                 "enabled_video_retrieval_layers": list(
                     condition.enabled_video_retrieval_layers(NUM_LAYERS)
                 ),
@@ -780,7 +808,12 @@ def _condition_command(
     ]
 
 
-def _validate_smoke_gate(path: Path | None, provenance: Provenance, task_config: str) -> None:
+def _validate_smoke_gate(
+    path: Path | None,
+    provenance: Provenance,
+    task_config: str,
+    gpu_ids: Sequence[int],
+) -> None:
     if path is None:
         raise ValueError("--mode full requires --smoke-summary.")
     summary_path = path.resolve()
@@ -797,6 +830,7 @@ def _validate_smoke_gate(path: Path | None, provenance: Provenance, task_config:
         "num_trials": SMOKE_TRIALS,
         "seed": SEED,
         "git_commit_hash": git_commit(project_root),
+        "gpu_ids": list(gpu_ids),
         "provenance": provenance.identity_dict(),
         "expected_conditions": names,
     }
@@ -826,6 +860,7 @@ def _validate_smoke_gate(path: Path | None, provenance: Provenance, task_config:
         inspected = _inspect_condition_dir(
             smoke_root / condition.name,
             condition_index=index,
+            physical_gpu=gpu_ids[index],
             condition=condition,
             runtime=runtime,
             provenance=provenance,
@@ -836,6 +871,7 @@ def _validate_smoke_gate(path: Path | None, provenance: Provenance, task_config:
 
 def _status_payload(
     condition_index: int,
+    physical_gpu: int,
     condition: DiagnosisCondition,
     mode: str,
     output_dir: Path,
@@ -858,11 +894,11 @@ def _status_payload(
         ),
         "disabled_video_layers": list(condition.disabled_video_layers),
         "replacement_video_layers": list(condition.replacement_video_layers),
-        "physical_gpu": condition_index,
+        "physical_gpu": physical_gpu,
         "gpu": dict(gpu_record),
-        "cuda_visible_devices": str(condition_index),
+        "cuda_visible_devices": str(physical_gpu),
         "model_device": "cuda:0",
-        "mujoco_egl_device_id": str(condition_index),
+        "mujoco_egl_device_id": str(physical_gpu),
         "output_dir": str(output_dir),
         "status": attempt["status"],
         "attempts": attempts,
@@ -872,6 +908,7 @@ def _status_payload(
 def _launch_condition(
     *,
     condition_index: int,
+    physical_gpu: int,
     condition: DiagnosisCondition,
     output_root: Path,
     python_path: Path,
@@ -913,6 +950,7 @@ def _launch_condition(
     }
     status = _status_payload(
         condition_index,
+        physical_gpu,
         condition,
         mode,
         condition_output,
@@ -923,7 +961,7 @@ def _launch_condition(
     atomic_write_json(status_path, status)
     log_handle = log_path.open("x", encoding="utf-8")
     log_handle.write(
-        f"[{now_iso()}] {condition.name} physical_gpu={condition_index} "
+        f"[{now_iso()}] {condition.name} physical_gpu={physical_gpu} "
         "logical_device=cuda:0 no_DDP=true\n"
     )
     log_handle.write(shlex.join(command) + "\n")
@@ -931,7 +969,7 @@ def _launch_condition(
     process = subprocess.Popen(
         command,
         cwd=project_root,
-        env=_child_environment(condition_index),
+        env=_child_environment(physical_gpu),
         stdout=log_handle,
         stderr=subprocess.STDOUT,
         start_new_session=True,
@@ -944,6 +982,7 @@ def _launch_condition(
     atomic_write_json(status_path, status)
     return LiveProcess(
         condition_index,
+        physical_gpu,
         condition,
         process,
         log_handle,
@@ -984,6 +1023,7 @@ def _collect_states(
     output_root: Path,
     runtime: RuntimeSpec,
     provenance: Provenance,
+    gpu_ids: Sequence[int],
 ) -> tuple[dict[str, Any], bool]:
     states: dict[str, Any] = {}
     all_complete = True
@@ -992,6 +1032,7 @@ def _collect_states(
             inspected = _inspect_condition_dir(
                 output_root / condition.name,
                 condition_index=index,
+                physical_gpu=gpu_ids[index],
                 condition=condition,
                 runtime=runtime,
                 provenance=provenance,
@@ -1000,7 +1041,7 @@ def _collect_states(
                 "state": inspected.state,
                 "completed_task_ids": list(inspected.completed_task_ids),
                 "detail": inspected.detail,
-                "physical_gpu": index,
+                "physical_gpu": gpu_ids[index],
             }
             all_complete &= inspected.state == "complete"
         except Exception as exc:
@@ -1008,7 +1049,7 @@ def _collect_states(
                 "state": "invalid",
                 "completed_task_ids": [],
                 "detail": str(exc),
-                "physical_gpu": index,
+                "physical_gpu": gpu_ids[index],
             }
             all_complete = False
     return states, all_complete
@@ -1024,6 +1065,7 @@ def _write_summary(
     all_succeeded: bool,
     interrupted: bool,
     start: str,
+    gpu_ids: Sequence[int],
 ) -> Path:
     path = output_root / SUMMARY_NAME
     atomic_write_json(
@@ -1040,6 +1082,7 @@ def _write_summary(
             "num_trials": runtime.num_trials,
             "seed": SEED,
             "git_commit_hash": git_commit(project_root),
+            "gpu_ids": list(gpu_ids),
             "provenance": provenance.identity_dict(),
             "expected_conditions": [
                 condition.name for condition in build_round3b_conditions(NUM_LAYERS)
@@ -1063,17 +1106,27 @@ def _main_locked(
     python_path = _resolve_python(args.python)
     provenance = _load_provenance(args) if provenance is None else provenance
     runtime = _resolve_runtime(args.task_config, args.mode)
+    gpu_ids = _validate_gpu_ids(args.gpu_ids)
     if args.mode == "full":
-        _validate_smoke_gate(args.smoke_summary, provenance, args.task_config)
+        _validate_smoke_gate(
+            args.smoke_summary, provenance, args.task_config, gpu_ids
+        )
     elif args.smoke_summary is not None:
         raise ValueError("--smoke-summary is only valid for --mode full.")
     gpu_inventory = _gpu_inventory()
+    inventory_by_index = {int(record["index"]): record for record in gpu_inventory}
+    missing_gpu_ids = [gpu_id for gpu_id in gpu_ids if gpu_id not in inventory_by_index]
+    if missing_gpu_ids:
+        raise ValueError(
+            f"Requested physical GPUs are absent from inventory: {missing_gpu_ids}."
+        )
     identity = _root_identity(
         mode=args.mode,
         runtime=runtime,
         provenance=provenance,
         python_path=python_path,
         gpu_inventory=gpu_inventory,
+        gpu_ids=gpu_ids,
     )
     _prepare_output_root(output_root, identity)
     _validate_root_layout(output_root)
@@ -1083,6 +1136,7 @@ def _main_locked(
         index: _inspect_condition_dir(
             output_root / condition.name,
             condition_index=index,
+            physical_gpu=gpu_ids[index],
             condition=condition,
             runtime=runtime,
             provenance=provenance,
@@ -1090,7 +1144,7 @@ def _main_locked(
         for index, condition in enumerate(conditions)
     }
     if all(item.state == "complete" for item in inspections.values()):
-        states, complete = _collect_states(output_root, runtime, provenance)
+        states, complete = _collect_states(output_root, runtime, provenance, gpu_ids)
         existing_summary = output_root / SUMMARY_NAME
         if existing_summary.exists():
             current = _read_json(existing_summary, label="launcher summary")
@@ -1107,6 +1161,7 @@ def _main_locked(
             all_succeeded=complete,
             interrupted=False,
             start=start,
+            gpu_ids=gpu_ids,
         ))
         return
 
@@ -1120,17 +1175,22 @@ def _main_locked(
                 continue
             launched = _launch_condition(
                 condition_index=index,
+                physical_gpu=gpu_ids[index],
                 condition=condition,
                 output_root=output_root,
                 python_path=python_path,
                 runtime=runtime,
                 provenance=provenance,
                 mode=args.mode,
-                gpu_record=gpu_inventory[index],
+                gpu_record=inventory_by_index[gpu_ids[index]],
                 launcher_lock_fd=launcher_lock_fd,
             )
             live.append(launched)
-            print(f"Launched {condition.name} on GPU {index}: {launched.log_path}", flush=True)
+            print(
+                f"Launched {condition.name} on physical GPU {gpu_ids[index]}: "
+                f"{launched.log_path}",
+                flush=True,
+            )
         for process in live:
             code = process.process.wait()
             _finish(process, code)
@@ -1140,6 +1200,7 @@ def _main_locked(
                 inspected = _inspect_condition_dir(
                     output_root / process.condition.name,
                     condition_index=process.condition_index,
+                    physical_gpu=process.physical_gpu,
                     condition=process.condition,
                     runtime=runtime,
                     provenance=provenance,
@@ -1162,7 +1223,7 @@ def _main_locked(
             elif not process.log_handle.closed:
                 process.log_handle.close()
 
-    states, complete = _collect_states(output_root, runtime, provenance)
+    states, complete = _collect_states(output_root, runtime, provenance, gpu_ids)
     summary = _write_summary(
         output_root,
         mode=args.mode,
@@ -1172,6 +1233,7 @@ def _main_locked(
         all_succeeded=complete and failure is None,
         interrupted=interrupted,
         start=start,
+        gpu_ids=gpu_ids,
     )
     print(f"Launcher summary: {summary}")
     if interrupted:

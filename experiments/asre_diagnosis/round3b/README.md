@@ -29,6 +29,16 @@ set -o pipefail
   2>&1 | tee asre_results/round3b/logs/driver.log
 ```
 
+The default physical GPU assignment is `0,1,2`. When another isolated
+three-GPU set is available, record it explicitly without changing condition
+order, for example:
+
+```bash
+ROUND3B_GPU_IDS=4,5,6 \
+./experiments/asre_diagnosis/round3b/run_full_experiment.sh \
+  2>&1 | tee asre_results/round3b/logs/driver.log
+```
+
 The driver validates the frozen Round-3A parent, captures and freezes donor
 observations, runs the same-input numerical identity gate, replays the exact
 499-state offline bank, runs a two-trial task-0 smoke on three isolated GPUs,

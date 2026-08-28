@@ -36,7 +36,9 @@ from experiments.asre_diagnosis.round3b.launch_three_gpu import (
     _condition_command,
     _require_clean_worktree,
     _resolve_runtime,
+    _status_payload,
     _validate_action_traces,
+    _validate_gpu_ids,
 )
 from experiments.asre_diagnosis.round3b.preflight import _validate_donors
 
@@ -70,6 +72,28 @@ def _provenance(path: Path) -> Provenance:
 
 
 class Round3BLauncherTest(unittest.TestCase):
+    def test_explicit_physical_gpu_mapping_is_validated_and_recorded(self) -> None:
+        self.assertEqual(_validate_gpu_ids([4, 5, 6]), (4, 5, 6))
+        for invalid in ([4, 4, 6], [-1, 5, 6], [4, 5]):
+            with self.assertRaises(ValueError):
+                _validate_gpu_ids(invalid)
+
+        condition = build_round3b_conditions(30)[1]
+        payload = _status_payload(
+            1,
+            5,
+            condition,
+            "smoke",
+            Path("/output"),
+            {"index": 5, "name": "NVIDIA RTX A5000"},
+            None,
+            {"status": "launching"},
+        )
+        self.assertEqual(payload["condition_index"], 1)
+        self.assertEqual(payload["physical_gpu"], 5)
+        self.assertEqual(payload["cuda_visible_devices"], "5")
+        self.assertEqual(payload["mujoco_egl_device_id"], "5")
+
     def test_runtime_and_conditions_are_exactly_frozen(self) -> None:
         smoke = _resolve_runtime("libero_uncond_2cam224_1e-4", "smoke")
         full = _resolve_runtime("libero_uncond_2cam224_1e-4", "full")
