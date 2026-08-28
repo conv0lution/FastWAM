@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional, Sequence
+from typing import Any, Mapping, Optional, Sequence
 
 import torch
 
@@ -135,6 +135,242 @@ def select_replacement_video_cache(
             for layer in range(num_layers)
         ],
     )
+
+
+def action_visible_video_token_indices(
+    action_attention_mask: torch.Tensor,
+    *,
+    video_seq_len: int,
+) -> tuple[int, ...]:
+    """Return video positions visible to at least one action query.
+
+    The attention mask is the runtime source of truth.  This deliberately avoids
+    assumptions about image resolution, camera count, or token packing.
+    """
+    if not isinstance(action_attention_mask, torch.Tensor):
+        raise TypeError("`action_attention_mask` must be a tensor.")
+    if action_attention_mask.ndim < 2:
+        raise ValueError(
+            "`action_attention_mask` must have at least query and key dimensions."
+        )
+    if video_seq_len <= 0:
+        raise ValueError(f"`video_seq_len` must be positive, got {video_seq_len}.")
+    if int(action_attention_mask.shape[-1]) < video_seq_len:
+        raise ValueError(
+            "Action attention mask has fewer key positions than the video sequence: "
+            f"mask={tuple(action_attention_mask.shape)}, video_seq_len={video_seq_len}."
+        )
+    visible = action_attention_mask[..., :video_seq_len].to(dtype=torch.bool)
+    reduce_dims = tuple(range(visible.ndim - 1))
+    visible = visible.any(dim=reduce_dims)
+    return tuple(
+        int(index)
+        for index in torch.nonzero(visible, as_tuple=False).flatten().cpu().tolist()
+    )
+
+
+def _normalize_component_indices(
+    indices: Sequence[int],
+    *,
+    argument_name: str,
+    upper_bound: int,
+) -> tuple[int, ...]:
+    requested = list(indices)
+    if any(isinstance(index, bool) or not isinstance(index, int) for index in requested):
+        raise TypeError(f"`{argument_name}` must contain only integer indices.")
+    if len(set(requested)) != len(requested):
+        raise ValueError(f"`{argument_name}` must not contain duplicate indices.")
+    invalid = [index for index in requested if index < 0 or index >= upper_bound]
+    if invalid:
+        raise ValueError(
+            f"`{argument_name}` contains out-of-range indices {invalid}; "
+            f"valid range is [0, {upper_bound - 1}]."
+        )
+    return tuple(sorted(requested))
+
+
+def mix_replacement_video_cache(
+    *,
+    current_cache_k: Sequence[torch.Tensor],
+    current_cache_v: Sequence[torch.Tensor],
+    replacement_cache_k: Sequence[torch.Tensor],
+    replacement_cache_v: Sequence[torch.Tensor],
+    replacement_video_layers: Sequence[int],
+    action_visible_token_indices: Sequence[int],
+    retained_current_token_indices: Optional[Sequence[int]] = None,
+    retained_current_heads_by_layer: Optional[Mapping[int, Sequence[int]]] = None,
+    num_heads: Optional[int] = None,
+    head_dim: Optional[int] = None,
+    num_layers: int,
+) -> tuple[list[torch.Tensor], list[torch.Tensor], dict[str, Any]]:
+    """Mix current and donor K/V without changing cache or attention geometry.
+
+    Exactly one granularity is selected: a single runtime-token mask shared by all
+    replacement layers, or one head mask per replacement layer.  Positions that no
+    action query can attend remain current and therefore are never intervened on.
+    """
+    validate_matching_video_cache(
+        current_cache_k=current_cache_k,
+        current_cache_v=current_cache_v,
+        replacement_cache_k=replacement_cache_k,
+        replacement_cache_v=replacement_cache_v,
+        num_layers=num_layers,
+    )
+    replacement_layers = normalize_video_layer_indices(
+        replacement_video_layers,
+        argument_name="replacement_video_layers",
+        num_layers=num_layers,
+    )
+    token_mode = retained_current_token_indices is not None
+    head_mode = retained_current_heads_by_layer is not None
+    if token_mode == head_mode:
+        raise ValueError(
+            "Provide exactly one of `retained_current_token_indices` or "
+            "`retained_current_heads_by_layer`."
+        )
+    if not replacement_layers:
+        raise ValueError("Hybrid cache mixing requires non-empty replacement layers.")
+
+    representative = current_cache_k[replacement_layers[0]]
+    if representative.ndim != 3:
+        raise ValueError(
+            "Video-cache tensors must have runtime shape [batch, tokens, heads*head_dim], "
+            f"got {tuple(representative.shape)}."
+        )
+    video_seq_len = int(representative.shape[1])
+    visible = _normalize_component_indices(
+        action_visible_token_indices,
+        argument_name="action_visible_token_indices",
+        upper_bound=video_seq_len,
+    )
+    if not visible:
+        raise ValueError("No action-visible video tokens were found at runtime.")
+    visible_set = set(visible)
+
+    mixed_k = list(current_cache_k)
+    mixed_v = list(current_cache_v)
+    audit: dict[str, Any] = {
+        "schema_version": 1,
+        "mode": "token" if token_mode else "head",
+        "replacement_video_layers": list(replacement_layers),
+        "video_seq_len": video_seq_len,
+        "action_visible_token_indices": list(visible),
+        "action_visible_token_count": len(visible),
+        "non_action_visible_token_count": video_seq_len - len(visible),
+        "same_mask_for_k_and_v": True,
+        "shape_preserved": True,
+        "layers": [],
+    }
+
+    if token_mode:
+        assert retained_current_token_indices is not None
+        retained = _normalize_component_indices(
+            retained_current_token_indices,
+            argument_name="retained_current_token_indices",
+            upper_bound=video_seq_len,
+        )
+        outside_visible = sorted(set(retained) - visible_set)
+        if outside_visible:
+            raise ValueError(
+                "Retained-current token mask contains positions not visible to action "
+                f"queries: {outside_visible}."
+            )
+        replaced = tuple(index for index in visible if index not in set(retained))
+        replace_index = torch.tensor(replaced, device=representative.device, dtype=torch.long)
+        for layer in replacement_layers:
+            for source, destination, donor in (
+                (current_cache_k[layer], mixed_k, replacement_cache_k[layer]),
+                (current_cache_v[layer], mixed_v, replacement_cache_v[layer]),
+            ):
+                result = source.clone()
+                if replaced:
+                    result.index_copy_(1, replace_index, donor.index_select(1, replace_index))
+                destination[layer] = result
+            audit["layers"].append(
+                {
+                    "layer": layer,
+                    "retained_current_token_count": len(retained),
+                    "replacement_token_count": len(replaced),
+                }
+            )
+        audit.update(
+            {
+                "retained_current_token_indices": list(retained),
+                "retained_current_token_count": len(retained),
+                "replacement_token_indices": list(replaced),
+                "replacement_token_count": len(replaced),
+                "num_heads": None,
+                "head_dim": None,
+            }
+        )
+    else:
+        assert retained_current_heads_by_layer is not None
+        if not isinstance(num_heads, int) or isinstance(num_heads, bool) or num_heads <= 0:
+            raise ValueError(f"`num_heads` must be a positive integer, got {num_heads!r}.")
+        if not isinstance(head_dim, int) or isinstance(head_dim, bool) or head_dim <= 0:
+            raise ValueError(f"`head_dim` must be a positive integer, got {head_dim!r}.")
+        expected_width = num_heads * head_dim
+        configured_layers = set(retained_current_heads_by_layer)
+        if configured_layers != set(replacement_layers):
+            raise ValueError(
+                "Head mask must define exactly every replacement layer; "
+                f"configured={sorted(configured_layers)}, expected={list(replacement_layers)}."
+            )
+        visible_mask = torch.zeros(
+            video_seq_len, device=representative.device, dtype=torch.bool
+        )
+        visible_mask[list(visible)] = True
+        normalized_heads: dict[str, list[int]] = {}
+        for layer in replacement_layers:
+            retained_heads = _normalize_component_indices(
+                retained_current_heads_by_layer[layer],
+                argument_name=f"retained_current_heads_by_layer[{layer}]",
+                upper_bound=num_heads,
+            )
+            replacement_heads = tuple(
+                head for head in range(num_heads) if head not in set(retained_heads)
+            )
+            head_replacement_mask = torch.zeros(
+                num_heads, device=representative.device, dtype=torch.bool
+            )
+            head_replacement_mask[list(replacement_heads)] = True
+            replacement_mask = (
+                visible_mask.view(1, video_seq_len, 1, 1)
+                & head_replacement_mask.view(1, 1, num_heads, 1)
+            )
+            for source, destination, donor in (
+                (current_cache_k[layer], mixed_k, replacement_cache_k[layer]),
+                (current_cache_v[layer], mixed_v, replacement_cache_v[layer]),
+            ):
+                if int(source.shape[-1]) != expected_width:
+                    raise ValueError(
+                        f"Layer {layer} cache width {source.shape[-1]} does not equal "
+                        f"num_heads*head_dim={num_heads}*{head_dim}={expected_width}."
+                    )
+                current_view = source.reshape(*source.shape[:-1], num_heads, head_dim)
+                donor_view = donor.reshape(*donor.shape[:-1], num_heads, head_dim)
+                destination[layer] = torch.where(
+                    replacement_mask, donor_view, current_view
+                ).reshape_as(source)
+            normalized_heads[str(layer)] = list(retained_heads)
+            audit["layers"].append(
+                {
+                    "layer": layer,
+                    "retained_current_head_indices": list(retained_heads),
+                    "retained_current_head_count": len(retained_heads),
+                    "replacement_head_indices": list(replacement_heads),
+                    "replacement_head_count": len(replacement_heads),
+                }
+            )
+        audit.update(
+            {
+                "retained_current_heads_by_layer": normalized_heads,
+                "num_heads": num_heads,
+                "head_dim": head_dim,
+                "retained_current_token_indices": None,
+            }
+        )
+    return mixed_k, mixed_v, audit
 
 
 def _tensor_stats(tensor: torch.Tensor) -> dict[str, Any]:

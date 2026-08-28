@@ -18,6 +18,7 @@ ROUND2_PROTOCOL = "round2_keep_schedules"
 ROUND3A_PROTOCOL = "round3a_late_factorial"
 ROUND3B_PROTOCOL = "round3b_matched_kv_replacement"
 G0_PROTOCOL = "g0_cross_suite_generalization"
+ROUND4A_PROTOCOL = "round4a_matched_content_axis_screen"
 
 
 @dataclass(frozen=True)
@@ -35,6 +36,12 @@ class DiagnosisCondition:
     def enabled_video_retrieval_layers(self, num_layers: int) -> tuple[int, ...]:
         disabled = set(self.disabled_video_layers)
         return tuple(layer for layer in range(num_layers) if layer not in disabled)
+
+
+@dataclass(frozen=True)
+class Round4ACondition(DiagnosisCondition):
+    hybrid_axis: Optional[str] = None
+    mask_seed: Optional[int] = None
 
 
 def build_conditions(num_layers: int) -> list[DiagnosisCondition]:
@@ -158,6 +165,44 @@ def build_g0_conditions(num_layers: int) -> list[DiagnosisCondition]:
             replacement_video_layers=late_half,
         ),
     ]
+
+
+def build_round4a_conditions(num_layers: int) -> list[Round4ACondition]:
+    """Build the frozen eight-arm Stage-2 Round-4A screening matrix."""
+    if num_layers != 30:
+        raise ValueError(
+            "ASRE Round 4A is pre-registered for exactly 30 action layers; "
+            f"the selected model exposes {num_layers}."
+        )
+    early_layers = tuple(range(0, 15))
+    late_layers = tuple(range(15, 30))
+    conditions = [
+        Round4ACondition("current_all", early_layers),
+        Round4ACondition(
+            "wrong_all", early_layers, replacement_video_layers=late_layers
+        ),
+    ]
+    conditions.extend(
+        Round4ACondition(
+            f"head50_seed{seed}",
+            early_layers,
+            replacement_video_layers=late_layers,
+            hybrid_axis="head",
+            mask_seed=seed,
+        )
+        for seed in (1, 2, 3)
+    )
+    conditions.extend(
+        Round4ACondition(
+            f"token50_seed{seed}",
+            early_layers,
+            replacement_video_layers=late_layers,
+            hybrid_axis="token",
+            mask_seed=seed,
+        )
+        for seed in (1, 2, 3)
+    )
+    return conditions
 
 
 def get_num_model_layers(model: torch.nn.Module) -> int:
@@ -297,14 +342,16 @@ def resolve_condition(diagnosis_cfg: Mapping[str, Any], num_layers: int) -> Diag
         ROUND3A_PROTOCOL,
         ROUND3B_PROTOCOL,
         G0_PROTOCOL,
+        ROUND4A_PROTOCOL,
     }:
         raise ValueError(
             f"Unsupported ASRE_DIAGNOSIS.protocol={protocol!r}; expected "
             f"one of {ROUND1_PROTOCOL!r}, {ROUND2_PROTOCOL!r}, or "
-            f"{ROUND3A_PROTOCOL!r}, {ROUND3B_PROTOCOL!r}, or {G0_PROTOCOL!r}."
+            f"{ROUND3A_PROTOCOL!r}, {ROUND3B_PROTOCOL!r}, {G0_PROTOCOL!r}, "
+            f"or {ROUND4A_PROTOCOL!r}."
         )
 
-    replacement_protocols = {ROUND3B_PROTOCOL, G0_PROTOCOL}
+    replacement_protocols = {ROUND3B_PROTOCOL, G0_PROTOCOL, ROUND4A_PROTOCOL}
     if protocol in replacement_protocols and mode != "replace_video_kv":
         raise ValueError(
             f"ASRE protocol {protocol!r} requires "
@@ -315,10 +362,17 @@ def resolve_condition(diagnosis_cfg: Mapping[str, Any], num_layers: int) -> Diag
             f"{protocol} requires ASRE_DIAGNOSIS.mode='drop_video_kv'."
         )
 
-    if protocol in {ROUND2_PROTOCOL, ROUND3A_PROTOCOL, ROUND3B_PROTOCOL, G0_PROTOCOL}:
+    if protocol in {
+        ROUND2_PROTOCOL,
+        ROUND3A_PROTOCOL,
+        ROUND3B_PROTOCOL,
+        G0_PROTOCOL,
+        ROUND4A_PROTOCOL,
+    }:
         is_round2 = protocol == ROUND2_PROTOCOL
         is_round3a = protocol == ROUND3A_PROTOCOL
         is_round3b = protocol == ROUND3B_PROTOCOL
+        is_round4a = protocol == ROUND4A_PROTOCOL
         round_label = (
             "Round-2"
             if is_round2
@@ -326,6 +380,8 @@ def resolve_condition(diagnosis_cfg: Mapping[str, Any], num_layers: int) -> Diag
             if is_round3a
             else "Round-3B"
             if is_round3b
+            else "Round-4A"
+            if is_round4a
             else "G0"
         )
         conditions = (
@@ -335,6 +391,8 @@ def resolve_condition(diagnosis_cfg: Mapping[str, Any], num_layers: int) -> Diag
             if is_round3a
             else build_round3b_conditions(num_layers)
             if is_round3b
+            else build_round4a_conditions(num_layers)
+            if is_round4a
             else build_g0_conditions(num_layers)
         )
         condition_index = diagnosis_cfg.get("condition_index")
@@ -379,6 +437,24 @@ def resolve_condition(diagnosis_cfg: Mapping[str, Any], num_layers: int) -> Diag
                 f"Configured replacement layers {list(replacement_layers)} disagree "
                 f"with {selected.name}: {list(selected.replacement_video_layers)}."
             )
+        if is_round4a:
+            assert isinstance(selected, Round4ACondition)
+            configured_axis = diagnosis_cfg.get("hybrid_axis")
+            if configured_axis in {"", "none", "null"}:
+                configured_axis = None
+            if configured_axis != selected.hybrid_axis:
+                raise ValueError(
+                    f"Configured hybrid_axis={configured_axis!r} disagrees with "
+                    f"{selected.name}: {selected.hybrid_axis!r}."
+                )
+            configured_seed = diagnosis_cfg.get("hybrid_mask_seed")
+            if configured_seed is not None:
+                configured_seed = int(configured_seed)
+            if configured_seed != selected.mask_seed:
+                raise ValueError(
+                    f"Configured hybrid_mask_seed={configured_seed!r} disagrees with "
+                    f"{selected.name}: {selected.mask_seed!r}."
+                )
         return selected
 
     if replacement_layers:

@@ -65,6 +65,8 @@ class _TinyActionExpert(nn.Module):
 
 class _TinyMoT(nn.Module):
     num_layers = 3
+    num_heads = 1
+    attn_head_dim = 1
 
     def __init__(self) -> None:
         super().__init__()

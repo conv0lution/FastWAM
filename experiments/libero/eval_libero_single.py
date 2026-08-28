@@ -45,6 +45,7 @@ from experiments.asre_diagnosis.common import (
     ROUND2_PROTOCOL,
     ROUND3A_PROTOCOL,
     ROUND3B_PROTOCOL,
+    ROUND4A_PROTOCOL,
     atomic_write_json,
     build_run_metadata,
     git_commit,
@@ -55,6 +56,11 @@ from experiments.asre_diagnosis.common import (
     sha256_json,
 )
 from experiments.asre_diagnosis.round3b.donor import OnlineDonorBundle, tensor_sha256
+from experiments.asre_diagnosis.round4a.masks import (
+    Round4AMaskSpec,
+    load_mask_manifest,
+    load_mask_spec,
+)
 from fastwam.datasets.lerobot.processors.fastwam_processor import FastWAMProcessor
 from fastwam.datasets.lerobot.utils.normalizer import load_dataset_stats_from_json
 from fastwam.utils.pytorch_utils import set_global_seed
@@ -141,7 +147,7 @@ def _load_donor_bundle(
         if diagnosis_cfg.get(key) is not None
         and str(diagnosis_cfg.get(key)).strip() != ""
     }
-    if protocol not in {ROUND3B_PROTOCOL, G0_PROTOCOL}:
+    if protocol not in {ROUND3B_PROTOCOL, G0_PROTOCOL, ROUND4A_PROTOCOL}:
         if configured:
             raise ValueError(
                 "Donor artifacts are only valid for replacement-capable ASRE protocols; "
@@ -209,6 +215,46 @@ def _load_donor_bundle(
     if missing_task_ids:
         raise ValueError(f"Frozen donor mapping does not cover task IDs: {missing_task_ids}.")
     return bundle
+
+
+def _load_round4a_mask_spec(cfg: DictConfig) -> Optional[Round4AMaskSpec]:
+    diagnosis_cfg = cfg.get("ASRE_DIAGNOSIS", {})
+    if str(diagnosis_cfg.get("protocol", "")) != ROUND4A_PROTOCOL:
+        return None
+    path_value = diagnosis_cfg.get("hybrid_mask_manifest_path")
+    digest_value = diagnosis_cfg.get("hybrid_mask_manifest_sha256")
+    if path_value is None or str(path_value).strip() == "":
+        raise ValueError("Round-4A requires hybrid_mask_manifest_path for every condition.")
+    if digest_value is None or str(digest_value).strip() == "":
+        raise ValueError("Round-4A requires hybrid_mask_manifest_sha256 for every condition.")
+    path = _resolve_required_artifact_path(
+        path_value,
+        label="hybrid_mask_manifest_path",
+        protocol_label="ASRE Round 4A",
+    )
+    digest = str(digest_value)
+    load_mask_manifest(path=path, expected_sha256=digest)
+    axis = diagnosis_cfg.get("hybrid_axis")
+    if axis in {None, "", "none", "null"}:
+        return None
+    condition_name = str(diagnosis_cfg.get("condition_name", ""))
+    spec = load_mask_spec(
+        path=path,
+        expected_sha256=digest,
+        condition_name=condition_name,
+    )
+    if spec.axis != str(axis):
+        raise ValueError(
+            f"Round-4A mask axis mismatch for {condition_name}: "
+            f"manifest={spec.axis}, configured={axis}."
+        )
+    configured_seed = diagnosis_cfg.get("hybrid_mask_seed")
+    if configured_seed is None or int(configured_seed) != spec.seed:
+        raise ValueError(
+            f"Round-4A mask seed mismatch for {condition_name}: "
+            f"manifest={spec.seed}, configured={configured_seed}."
+        )
+    return spec
 
 
 def _load_round3b_donor_bundle(
@@ -328,6 +374,99 @@ def _resolve_g0_run_provenance(cfg: DictConfig) -> dict[str, Any]:
             raise ValueError(f"G0 {key} is not a full lowercase Git SHA: {digest!r}.")
         payload[key] = digest
     for key in ("round3a_parent_tag", "round3b_parent_tag"):
+        payload[key] = str(diagnosis_cfg.get(key))
+    for key, value in payload.items():
+        cfg.ASRE_DIAGNOSIS[key] = value
+    return payload
+
+
+def _resolve_round4a_run_provenance(cfg: DictConfig) -> dict[str, Any]:
+    """Validate all frozen Stage-1 parents and Round-4A machinery artifacts."""
+    diagnosis_cfg = cfg.get("ASRE_DIAGNOSIS", {})
+    if str(diagnosis_cfg.get("protocol", "")) != ROUND4A_PROTOCOL:
+        return {}
+    required = (
+        "preflight_report_path",
+        "preflight_report_sha256",
+        "machinery_report_path",
+        "machinery_report_sha256",
+        "hybrid_mask_manifest_path",
+        "hybrid_mask_manifest_sha256",
+        "token_mask_manifest_path",
+        "token_mask_manifest_sha256",
+        "head_mask_manifest_path",
+        "head_mask_manifest_sha256",
+        "round3b_parent_tag",
+        "round3b_parent_commit",
+        "g0_parent_tag",
+        "g0_parent_commit",
+        "g0_summary_path",
+        "g0_summary_sha256",
+    )
+    missing = [
+        key
+        for key in required
+        if diagnosis_cfg.get(key) is None or str(diagnosis_cfg.get(key)).strip() == ""
+    ]
+    if missing:
+        raise ValueError(
+            f"Round-4A run provenance is incomplete; missing fields: {missing}."
+        )
+
+    payload: dict[str, Any] = {}
+    for stem in (
+        "preflight_report",
+        "machinery_report",
+        "hybrid_mask_manifest",
+        "token_mask_manifest",
+        "head_mask_manifest",
+        "g0_summary",
+    ):
+        path_key = f"{stem}_path"
+        digest_key = f"{stem}_sha256"
+        path = _resolve_required_artifact_path(
+            diagnosis_cfg.get(path_key),
+            label=path_key,
+            protocol_label="ASRE Round 4A",
+        )
+        observed = sha256_file(path)
+        expected = str(diagnosis_cfg.get(digest_key))
+        if observed != expected:
+            raise ValueError(
+                f"Round-4A {stem} SHA256 mismatch: "
+                f"observed={observed}, expected={expected}."
+            )
+        payload[path_key] = str(path)
+        payload[digest_key] = observed
+    load_mask_manifest(
+        path=Path(payload["hybrid_mask_manifest_path"]),
+        expected_sha256=payload["hybrid_mask_manifest_sha256"],
+    )
+    with Path(payload["g0_summary_path"]).open("r", encoding="utf-8") as handle:
+        g0_summary = json.load(handle)
+    g0_classification = str(
+        g0_summary.get("decision", {}).get(
+            "classification",
+            g0_summary.get(
+                "classification", g0_summary.get("overall_classification", "")
+            ),
+        )
+    ).lower()
+    if g0_classification not in {"strong", "g0-strong"}:
+        raise ValueError(
+            "Round-4A requires the frozen G0 gate classification to be strong; "
+            f"observed={g0_classification!r}."
+        )
+    payload["g0_gate_classification"] = g0_classification
+
+    for key in ("round3b_parent_commit", "g0_parent_commit"):
+        digest = str(diagnosis_cfg.get(key))
+        if len(digest) != 40 or any(
+            character not in "0123456789abcdef" for character in digest
+        ):
+            raise ValueError(f"Round-4A {key} is not a full lowercase Git SHA: {digest!r}.")
+        payload[key] = digest
+    for key in ("round3b_parent_tag", "g0_parent_tag"):
         payload[key] = str(diagnosis_cfg.get(key))
     for key, value in payload.items():
         cfg.ASRE_DIAGNOSIS[key] = value
@@ -748,6 +887,17 @@ def _run_prepared_action_inference(
         call_kwargs["disabled_video_layers"] = tuple(
             int(layer) for layer in diagnosis_cfg.get("disabled_video_layers", ())
         )
+        round4a_mask_spec = _load_round4a_mask_spec(cfg)
+        if round4a_mask_spec is not None:
+            for parameter_name, parameter_value in (
+                round4a_mask_spec.inference_kwargs().items()
+            ):
+                if parameter_name not in infer_parameters:
+                    raise ValueError(
+                        f"{type(model).__name__}.{infer_method.__name__} does not "
+                        f"support Round-4A argument {parameter_name!r}."
+                    )
+                call_kwargs[parameter_name] = parameter_value
         replacement_layers = tuple(
             int(layer) for layer in diagnosis_cfg.get("replacement_video_layers", ())
         )
@@ -875,6 +1025,11 @@ def _predict_action_chunk(
                 for layer in diagnosis_cfg.get("replacement_video_layers", ())
             ],
             "current_input_image_sha256": observed_current_image_sha256,
+            "hybrid_axis": diagnosis_cfg.get("hybrid_axis"),
+            "hybrid_mask_seed": diagnosis_cfg.get("hybrid_mask_seed"),
+            "hybrid_mask_manifest_sha256": diagnosis_cfg.get(
+                "hybrid_mask_manifest_sha256"
+            ),
             "raw_action": raw_action.detach().to(device="cpu", dtype=torch.float32).numpy(),
             "executed_action": action.copy(),
         }
@@ -1356,6 +1511,32 @@ def _run_task_to_file(
                     )
                 }
             )
+        if str(diagnosis_cfg.get("protocol", "")) == ROUND4A_PROTOCOL:
+            results.update(
+                {
+                    key: diagnosis_cfg.get(key)
+                    for key in (
+                        "hybrid_axis",
+                        "hybrid_mask_seed",
+                        "hybrid_mask_manifest_path",
+                        "hybrid_mask_manifest_sha256",
+                        "token_mask_manifest_path",
+                        "token_mask_manifest_sha256",
+                        "head_mask_manifest_path",
+                        "head_mask_manifest_sha256",
+                        "preflight_report_path",
+                        "preflight_report_sha256",
+                        "machinery_report_path",
+                        "machinery_report_sha256",
+                        "round3b_parent_tag",
+                        "round3b_parent_commit",
+                        "g0_parent_tag",
+                        "g0_parent_commit",
+                        "g0_summary_path",
+                        "g0_summary_sha256",
+                    )
+                }
+            )
     if worker_id is not None:
         results["worker_id"] = worker_id
     results.update(
@@ -1661,6 +1842,7 @@ def eval_single_process(cfg: DictConfig):
     run_provenance = {
         **_resolve_round3b_run_provenance(cfg),
         **_resolve_g0_run_provenance(cfg),
+        **_resolve_round4a_run_provenance(cfg),
     }
 
     diagnosis_enabled = bool(diagnosis_cfg.get("enabled", False))
@@ -1725,6 +1907,16 @@ def eval_single_process(cfg: DictConfig):
                     "disabled_video_layers": list(condition.disabled_video_layers),
                     "replacement_video_layers": list(
                         condition.replacement_video_layers
+                    ),
+                    "hybrid_axis": cfg.ASRE_DIAGNOSIS.get("hybrid_axis"),
+                    "hybrid_mask_seed": cfg.ASRE_DIAGNOSIS.get(
+                        "hybrid_mask_seed"
+                    ),
+                    "hybrid_mask_manifest_path": cfg.ASRE_DIAGNOSIS.get(
+                        "hybrid_mask_manifest_path"
+                    ),
+                    "hybrid_mask_manifest_sha256": cfg.ASRE_DIAGNOSIS.get(
+                        "hybrid_mask_manifest_sha256"
                     ),
                 },
                 "text_conditioning_source": (
@@ -1814,6 +2006,7 @@ def eval_single_process(cfg: DictConfig):
                 ROUND3A_PROTOCOL,
                 ROUND3B_PROTOCOL,
                 G0_PROTOCOL,
+                ROUND4A_PROTOCOL,
             }:
                 resume_keys.extend(
                     [
@@ -1835,6 +2028,7 @@ def eval_single_process(cfg: DictConfig):
             if str(cfg.ASRE_DIAGNOSIS.get("protocol")) in {
                 ROUND3B_PROTOCOL,
                 G0_PROTOCOL,
+                ROUND4A_PROTOCOL,
             }:
                 resume_keys.extend(
                     [
@@ -1870,6 +2064,28 @@ def eval_single_process(cfg: DictConfig):
                         "round3a_parent_commit",
                         "round3b_parent_tag",
                         "round3b_parent_commit",
+                    ]
+                )
+            if str(cfg.ASRE_DIAGNOSIS.get("protocol")) == ROUND4A_PROTOCOL:
+                resume_keys.extend(
+                    [
+                        "preflight_report_path",
+                        "preflight_report_sha256",
+                        "machinery_report_path",
+                        "machinery_report_sha256",
+                        "hybrid_mask_manifest_path",
+                        "hybrid_mask_manifest_sha256",
+                        "token_mask_manifest_path",
+                        "token_mask_manifest_sha256",
+                        "head_mask_manifest_path",
+                        "head_mask_manifest_sha256",
+                        "round3b_parent_tag",
+                        "round3b_parent_commit",
+                        "g0_parent_tag",
+                        "g0_parent_commit",
+                        "g0_summary_path",
+                        "g0_summary_sha256",
+                        "g0_gate_classification",
                     ]
                 )
             mismatches = {

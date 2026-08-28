@@ -81,11 +81,23 @@ ASRE_DIAGNOSIS:
   self_replacement_report_sha256: null
   machinery_report_path: null
   machinery_report_sha256: null
+  hybrid_axis: null
+  hybrid_mask_seed: null
+  hybrid_mask_manifest_path: null
+  hybrid_mask_manifest_sha256: null
+  token_mask_manifest_path: null
+  token_mask_manifest_sha256: null
+  head_mask_manifest_path: null
+  head_mask_manifest_sha256: null
   round3a_parent_tag: null
   round3a_parent_commit: null
   round3a_run_commit: null
   round3b_parent_tag: null
   round3b_parent_commit: null
+  g0_parent_tag: null
+  g0_parent_commit: null
+  g0_summary_path: null
+  g0_summary_sha256: null
 
 MULTIRUN:
   create_only: false

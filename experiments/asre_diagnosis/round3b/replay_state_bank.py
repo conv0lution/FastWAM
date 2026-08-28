@@ -1,4 +1,8 @@
-"""Replay one Round-3B condition over the immutable 499-state bank."""
+"""Replay one matched-cache condition over the immutable 499-state bank.
+
+The original Round-3B path remains unchanged.  Round-4A reuses the same validated
+state ordering and donor mapping while supplying a frozen token/head mask.
+"""
 
 from __future__ import annotations
 
@@ -27,8 +31,10 @@ os.environ.pop("MUJOCO_EGL_DEVICE_ID", None)
 
 from experiments.asre_diagnosis.common import (  # noqa: E402
     ROUND3B_PROTOCOL,
+    ROUND4A_PROTOCOL,
     atomic_write_json,
     build_round3b_conditions,
+    build_round4a_conditions,
     build_run_metadata,
     get_num_model_layers,
     load_manifest,
@@ -51,6 +57,11 @@ from experiments.asre_diagnosis.round2.validate_state_bank import (  # noqa: E40
 from experiments.asre_diagnosis.round3b.offline_donor import (  # noqa: E402
     load_offline_donor_manifest,
     tensor_sha256,
+)
+from experiments.asre_diagnosis.round4a.masks import (  # noqa: E402
+    Round4AMaskSpec,
+    load_mask_manifest,
+    load_mask_spec,
 )
 from experiments.libero.eval_libero_single import (  # noqa: E402
     _load_model_checkpoint,
@@ -94,6 +105,7 @@ def _require_clean_worktree() -> None:
                 "--",
                 ".",
                 ":(exclude)asre_results/round3b/**",
+                ":(exclude)asre_results/round4a/**",
             ],
             cwd=PROJECT_ROOT,
             text=True,
@@ -177,6 +189,32 @@ def _atomic_write_actions(
     os.replace(temporary, path)
 
 
+def _load_actions(path: Path) -> tuple[list[str], list[np.ndarray], list[np.ndarray]]:
+    with np.load(path, allow_pickle=False) as payload:
+        sample_ids = [str(value) for value in payload["sample_ids"].tolist()]
+        raw = np.asarray(payload["raw_actions"], dtype=np.float32)
+        executed = np.asarray(payload["executed_actions"], dtype=np.float32)
+    if raw.shape != executed.shape or raw.ndim != 3 or raw.shape[-1] != 7:
+        raise ValueError(f"Malformed replay action checkpoint: {path}.")
+    if raw.shape[0] != len(sample_ids):
+        raise ValueError(f"Replay action checkpoint identity mismatch: {path}.")
+    if not np.all(np.isfinite(raw)) or not np.all(np.isfinite(executed)):
+        raise ValueError(f"Replay action checkpoint contains NaN/Inf: {path}.")
+    return sample_ids, list(raw), list(executed)
+
+
+def _load_jsonl(path: Path) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if line.strip():
+                payload = json.loads(line)
+                if not isinstance(payload, dict):
+                    raise TypeError(f"JSONL record must be an object: {path}")
+                records.append(payload)
+    return records
+
+
 def _write_summary_csv(path: Path, summary: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
@@ -236,6 +274,7 @@ def _run_model(
     disabled_video_layers: Sequence[int],
     replacement_video_layers: Sequence[int],
     replacement_input_image: torch.Tensor | None,
+    hybrid_mask_spec: Round4AMaskSpec | None,
     return_video_cache_stats: bool,
 ) -> dict[str, Any]:
     call_kwargs = dict(infer_kwargs)
@@ -249,6 +288,8 @@ def _run_model(
             "return_video_cache_stats": bool(return_video_cache_stats),
         }
     )
+    if hybrid_mask_spec is not None:
+        call_kwargs.update(hybrid_mask_spec.inference_kwargs())
     with torch.no_grad():
         prediction = model.infer_action(
             **call_kwargs,
@@ -269,12 +310,15 @@ def replay_state_bank(cfg: DictConfig) -> None:
     diagnosis_cfg = cfg.ASRE_DIAGNOSIS
     if not bool(diagnosis_cfg.get("enabled", False)):
         raise ValueError("Round-3B offline replay requires ASRE_DIAGNOSIS.enabled=true.")
-    if str(diagnosis_cfg.get("protocol", "")) != ROUND3B_PROTOCOL:
+    protocol = str(diagnosis_cfg.get("protocol", ""))
+    if protocol not in {ROUND3B_PROTOCOL, ROUND4A_PROTOCOL}:
         raise ValueError(
-            f"Round-3B offline replay requires ASRE_DIAGNOSIS.protocol={ROUND3B_PROTOCOL}."
+            "Matched-cache offline replay requires protocol "
+            f"{ROUND3B_PROTOCOL!r} or {ROUND4A_PROTOCOL!r}."
         )
+    round_label = "Round-4A" if protocol == ROUND4A_PROTOCOL else "Round-3B"
     if str(diagnosis_cfg.get("mode", "")) != "replace_video_kv":
-        raise ValueError("Round-3B offline replay requires mode=replace_video_kv.")
+        raise ValueError(f"{round_label} offline replay requires mode=replace_video_kv.")
     if cfg.get("seed") is not None:
         set_global_seed(int(cfg.seed), get_worker_init_fn=False)
 
@@ -319,7 +363,9 @@ def replay_state_bank(cfg: DictConfig) -> None:
         valid_manifest=valid_manifest, source_records=source_records
     )
     if len(selected_records) != 499:
-        raise ValueError(f"Round-3B requires exactly 499 valid states, got {len(selected_records)}.")
+        raise ValueError(
+            f"{round_label} requires exactly 499 valid states, got {len(selected_records)}."
+        )
     donor_lookup, donor_mapping = _load_donor_lookup(
         mapping_path=donor_mapping_path,
         valid_manifest_sha256=valid_manifest_sha256,
@@ -334,7 +380,9 @@ def replay_state_bank(cfg: DictConfig) -> None:
     if executed_prefix_length != 10 or executed_prefix_length != int(
         source_metadata.get("replan_steps", -1)
     ):
-        raise ValueError("Round-3B executed-prefix length must equal replan interval 10.")
+        raise ValueError(
+            f"{round_label} executed-prefix length must equal replan interval 10."
+        )
     source_compatibility = {
         "checkpoint_path": str(checkpoint_path),
         "dataset_stats_path": str(dataset_stats_path),
@@ -355,7 +403,7 @@ def replay_state_bank(cfg: DictConfig) -> None:
     }
     if mismatches:
         raise ValueError(
-            "Round-3B replay configuration is incompatible with the state bank: "
+            f"{round_label} replay configuration is incompatible with the state bank: "
             f"{json.dumps(mismatches, sort_keys=True)}"
         )
 
@@ -368,23 +416,55 @@ def replay_state_bank(cfg: DictConfig) -> None:
     model = model.to(model_device).eval()
     num_layers = get_num_model_layers(model)
     condition = resolve_condition(diagnosis_cfg, num_layers)
-    condition_index = build_round3b_conditions(num_layers).index(condition)
+    condition_index = (
+        build_round4a_conditions(num_layers).index(condition)
+        if protocol == ROUND4A_PROTOCOL
+        else build_round3b_conditions(num_layers).index(condition)
+    )
+    hybrid_mask_spec: Round4AMaskSpec | None = None
+    mask_manifest_path: Path | None = None
+    mask_manifest_sha256: str | None = None
+    if protocol == ROUND4A_PROTOCOL:
+        mask_manifest_path = _resolve_path(
+            diagnosis_cfg.get("hybrid_mask_manifest_path"),
+            label="ASRE_DIAGNOSIS.hybrid_mask_manifest_path",
+        )
+        mask_manifest_sha256 = str(
+            diagnosis_cfg.get("hybrid_mask_manifest_sha256", "")
+        )
+        load_mask_manifest(
+            path=mask_manifest_path, expected_sha256=mask_manifest_sha256
+        )
+        axis = diagnosis_cfg.get("hybrid_axis")
+        if axis not in {None, "", "none", "null"}:
+            hybrid_mask_spec = load_mask_spec(
+                path=mask_manifest_path,
+                expected_sha256=mask_manifest_sha256,
+                condition_name=condition.name,
+            )
+            if hybrid_mask_spec.axis != str(axis):
+                raise ValueError(f"{round_label} configured mask axis mismatch.")
     cuda_visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES")
-    physical_gpu_value = os.environ.get("ASRE_ROUND3B_PHYSICAL_GPU")
+    physical_gpu_env = (
+        "ASRE_ROUND4A_PHYSICAL_GPU"
+        if protocol == ROUND4A_PROTOCOL
+        else "ASRE_ROUND3B_PHYSICAL_GPU"
+    )
+    physical_gpu_value = os.environ.get(physical_gpu_env)
     if physical_gpu_value is None or not physical_gpu_value.isdigit():
         raise ValueError(
-            "Round-3B offline replay requires ASRE_ROUND3B_PHYSICAL_GPU to "
+            f"{round_label} offline replay requires {physical_gpu_env} to "
             "record the assigned physical device."
         )
     physical_gpu = int(physical_gpu_value)
     if cuda_visible_devices != str(physical_gpu):
         raise ValueError(
-            "Round-3B offline GPU assignment disagrees with CUDA visibility; "
+            f"{round_label} offline GPU assignment disagrees with CUDA visibility; "
             f"condition={condition.name}, expected physical GPU {physical_gpu}, got "
             f"CUDA_VISIBLE_DEVICES={cuda_visible_devices!r}."
         )
     if str(model_device) != "cuda:0":
-        raise ValueError(f"Round-3B replay requires logical cuda:0, got {model_device}.")
+        raise ValueError(f"{round_label} replay requires logical cuda:0, got {model_device}.")
 
     cfg.ASRE_DIAGNOSIS.condition_name = condition.name
     cfg.ASRE_DIAGNOSIS.enabled_video_retrieval_layers = list(
@@ -401,8 +481,8 @@ def replay_state_bank(cfg: DictConfig) -> None:
     processor.set_normalizer_from_stats(dataset_stats)
 
     output_dir = output_root / condition.name
-    if output_dir.exists() and any(output_dir.iterdir()):
-        raise FileExistsError(f"Refusing to overwrite Round-3B replay output: {output_dir}")
+    if output_dir.exists() and not output_dir.is_dir():
+        raise FileExistsError(f"Replay output is not a directory: {output_dir}")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     first_sample = torch.load(
@@ -429,7 +509,7 @@ def replay_state_bank(cfg: DictConfig) -> None:
         num_inference_steps=num_inference_steps,
         replan_steps=int(source_metadata["replan_steps"]),
         start_timestamp=now_iso(),
-        condition_protocol=ROUND3B_PROTOCOL,
+        condition_protocol=protocol,
         checkpoint_sha256=str(valid_manifest["checkpoint_sha256"]),
         dataset_stats_sha256=str(valid_manifest["dataset_stats_sha256"]),
         state_bank_manifest_path=str(source_manifest_path),
@@ -442,7 +522,11 @@ def replay_state_bank(cfg: DictConfig) -> None:
     )
     metadata.update(
         {
-            "artifact_type": "asre_round3b_offline_state_bank_replay",
+            "artifact_type": (
+                "asre_round4a_offline_state_bank_replay"
+                if protocol == ROUND4A_PROTOCOL
+                else "asre_round3b_offline_state_bank_replay"
+            ),
             "status": "running",
             "output_dir": str(output_dir),
             "num_valid_samples": len(selected_records),
@@ -470,15 +554,99 @@ def replay_state_bank(cfg: DictConfig) -> None:
                 "context and proprioception are retained when recomputing donor video K/V"
             ),
             "condition_config": condition.to_dict(),
+            "hybrid_axis": diagnosis_cfg.get("hybrid_axis"),
+            "hybrid_mask_seed": diagnosis_cfg.get("hybrid_mask_seed"),
+            "hybrid_mask_manifest_path": (
+                None if mask_manifest_path is None else str(mask_manifest_path)
+            ),
+            "hybrid_mask_manifest_sha256": mask_manifest_sha256,
         }
     )
-    atomic_write_json(output_dir / "run_metadata.json", metadata)
-
+    if protocol == ROUND4A_PROTOCOL:
+        for key in (
+            "preflight_report_path",
+            "preflight_report_sha256",
+            "machinery_report_path",
+            "machinery_report_sha256",
+            "round3b_parent_tag",
+            "round3b_parent_commit",
+            "g0_parent_tag",
+            "g0_parent_commit",
+            "g0_summary_path",
+            "g0_summary_sha256",
+            "token_mask_manifest_path",
+            "token_mask_manifest_sha256",
+            "head_mask_manifest_path",
+            "head_mask_manifest_sha256",
+        ):
+            metadata[key] = diagnosis_cfg.get(key)
+    metadata_path = output_dir / "run_metadata.json"
+    records_path = output_dir / "per_sample.jsonl"
+    actions_path = output_dir / "actions.npz"
+    cache_stats_path = output_dir / "video_cache_stats.jsonl"
     records: list[dict[str, Any]] = []
     cache_stats_records: list[dict[str, Any]] = []
     raw_actions: list[np.ndarray] = []
     executed_actions: list[np.ndarray] = []
+    if metadata_path.exists():
+        existing_metadata = _read_json(metadata_path)
+        resume_expected = {
+            "artifact_type": metadata["artifact_type"],
+            "git_commit_hash": metadata["git_commit_hash"],
+            "condition_protocol": protocol,
+            "diagnosis_condition": condition.name,
+            "valid_state_bank_manifest_sha256": valid_manifest_sha256,
+            "offline_donor_mapping_sha256": sha256_file(donor_mapping_path),
+            "hybrid_mask_manifest_sha256": mask_manifest_sha256,
+            "num_valid_samples": len(selected_records),
+        }
+        mismatch = {
+            key: {"existing": existing_metadata.get(key), "requested": value}
+            for key, value in resume_expected.items()
+            if existing_metadata.get(key) != value
+        }
+        if mismatch:
+            raise FileExistsError(
+                f"Refusing incompatible {round_label} replay resume: "
+                f"{json.dumps(mismatch, sort_keys=True)}"
+            )
+        artifact_paths = (records_path, actions_path)
+        if any(path.exists() for path in artifact_paths) and not all(
+            path.is_file() for path in artifact_paths
+        ):
+            raise FileExistsError("Replay resume requires both records and actions checkpoints.")
+        if all(path.is_file() for path in artifact_paths):
+            records = _load_jsonl(records_path)
+            saved_ids, raw_actions, executed_actions = _load_actions(actions_path)
+            record_ids = [str(record.get("sample_id")) for record in records]
+            expected_prefix = expected_ids[: len(records)]
+            if saved_ids != record_ids or record_ids != expected_prefix:
+                raise ValueError("Replay resume checkpoint is not the frozen state-order prefix.")
+        if cache_stats_path.is_file():
+            cache_stats_records = _load_jsonl(cache_stats_path)
+        if str(existing_metadata.get("status")) == "complete":
+            if len(records) != len(selected_records):
+                raise ValueError("Completed replay metadata has an incomplete checkpoint.")
+            print(f"{round_label} offline replay already complete: {output_dir}")
+            return
+        metadata["start_timestamp"] = existing_metadata.get(
+            "start_timestamp", metadata["start_timestamp"]
+        )
+        metadata["resume_count"] = int(existing_metadata.get("resume_count", 0)) + 1
+    else:
+        unexpected = [path.name for path in output_dir.iterdir()]
+        if unexpected:
+            raise FileExistsError(
+                f"Unidentified replay output without metadata: {output_dir}: {unexpected}"
+            )
+        metadata["resume_count"] = 0
+    metadata["completed_samples"] = len(records)
+    atomic_write_json(metadata_path, metadata)
+
+    checkpoint_interval = 5
     for index, manifest_record in enumerate(selected_records, start=1):
+        if index <= len(records):
+            continue
         sample_id = str(manifest_record["sample_id"])
         sample = torch.load(
             state_bank_dir / str(manifest_record["sample_path"]),
@@ -523,7 +691,9 @@ def replay_state_bank(cfg: DictConfig) -> None:
             disabled_video_layers=condition.disabled_video_layers,
             replacement_video_layers=condition.replacement_video_layers,
             replacement_input_image=replacement_image,
-            return_video_cache_stats=bool(condition.replacement_video_layers),
+            hybrid_mask_spec=hybrid_mask_spec,
+            return_video_cache_stats=bool(condition.replacement_video_layers)
+            and (protocol != ROUND4A_PROTOCOL or index == 1),
         )
         diagnosis_raw_tensor = prediction["action"]
         if not bool(torch.isfinite(diagnosis_raw_tensor).all().item()):
@@ -581,7 +751,9 @@ def replay_state_bank(cfg: DictConfig) -> None:
         raw_actions.append(diagnosis_raw)
         executed_actions.append(np.asarray(diagnosis_executed, dtype=np.float32))
 
-        if condition.replacement_video_layers:
+        if condition.replacement_video_layers and (
+            protocol != ROUND4A_PROTOCOL or index == 1
+        ):
             cache_stats = prediction.get("video_cache_stats")
             if not isinstance(cache_stats, Mapping):
                 raise TypeError(f"Missing video_cache_stats for {sample_id}.")
@@ -596,7 +768,12 @@ def replay_state_bank(cfg: DictConfig) -> None:
                 layer_stats = layers[layer]
                 if int(layer_stats.get("layer", -1)) != layer:
                     raise ValueError(f"Cache audit layer ordering mismatch for {sample_id}.")
-                if str(layer_stats.get("selected_source")) != "replacement":
+                expected_source = (
+                    f"hybrid_{hybrid_mask_spec.axis}"
+                    if hybrid_mask_spec is not None
+                    else "replacement"
+                )
+                if str(layer_stats.get("selected_source")) != expected_source:
                     raise ValueError(f"Layer {layer} did not select replacement for {sample_id}.")
                 for source in ("current", "replacement"):
                     for key in ("k", "v"):
@@ -605,6 +782,12 @@ def replay_state_bank(cfg: DictConfig) -> None:
                             raise ValueError(
                                 f"Nonfinite {source} {key} cache at layer {layer}, {sample_id}."
                             )
+            if hybrid_mask_spec is not None:
+                hybrid_audit = cache_stats.get("hybrid_video_cache")
+                if not isinstance(hybrid_audit, Mapping):
+                    raise TypeError(f"Missing hybrid cache audit for {sample_id}.")
+                if str(hybrid_audit.get("mode")) != hybrid_mask_spec.axis:
+                    raise ValueError(f"Hybrid cache audit axis mismatch for {sample_id}.")
             cache_stats_records.append(
                 {
                     "sample_id": sample_id,
@@ -613,6 +796,19 @@ def replay_state_bank(cfg: DictConfig) -> None:
                 }
             )
         print(f"Replay {index}/{len(selected_records)} {condition.name}: {sample_id}")
+        if index % checkpoint_interval == 0 or index == len(selected_records):
+            _atomic_write_jsonl(records_path, records)
+            _atomic_write_actions(
+                actions_path,
+                sample_ids=expected_ids[: len(records)],
+                raw_actions=raw_actions,
+                executed_actions=executed_actions,
+            )
+            if cache_stats_records:
+                _atomic_write_jsonl(cache_stats_path, cache_stats_records)
+            metadata["completed_samples"] = len(records)
+            metadata["last_checkpoint_timestamp"] = now_iso()
+            atomic_write_json(metadata_path, metadata)
 
     dimension_mean = np.mean(
         np.asarray([record[DIMENSION_METRIC] for record in records], dtype=np.float64),
@@ -633,32 +829,32 @@ def replay_state_bank(cfg: DictConfig) -> None:
     summary.update({metric: _mean(records, metric) for metric in SCALAR_METRICS})
     summary[DIMENSION_METRIC] = json.dumps(dimension_mean.astype(float).tolist())
 
-    _atomic_write_jsonl(output_dir / "per_sample.jsonl", records)
+    _atomic_write_jsonl(records_path, records)
     _atomic_write_actions(
-        output_dir / "actions.npz",
+        actions_path,
         sample_ids=expected_ids,
         raw_actions=raw_actions,
         executed_actions=executed_actions,
     )
     if cache_stats_records:
-        _atomic_write_jsonl(output_dir / "video_cache_stats.jsonl", cache_stats_records)
+        _atomic_write_jsonl(cache_stats_path, cache_stats_records)
     _write_summary_csv(output_dir / "summary.csv", summary)
     metadata.update(
         {
             "status": "complete",
             "end_timestamp": now_iso(),
             "num_samples": len(records),
-            "actions_sha256": sha256_file(output_dir / "actions.npz"),
+            "actions_sha256": sha256_file(actions_path),
             "cache_stats_sha256": (
-                sha256_file(output_dir / "video_cache_stats.jsonl")
+                sha256_file(cache_stats_path)
                 if cache_stats_records
                 else None
             ),
         }
     )
-    atomic_write_json(output_dir / "run_metadata.json", metadata)
+    atomic_write_json(metadata_path, metadata)
     print(json.dumps(summary, indent=2))
-    print(f"Round-3B offline replay complete: {output_dir}")
+    print(f"{round_label} offline replay complete: {output_dir}")
 
 
 if __name__ == "__main__":

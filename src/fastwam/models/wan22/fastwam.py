@@ -1,4 +1,4 @@
-from typing import Any, Optional, Sequence, Union
+from typing import Any, Mapping, Optional, Sequence, Union
 
 import torch
 import torch.nn as nn
@@ -12,7 +12,9 @@ from .helpers.loader import load_wan22_ti2v_5b_components
 from .mot import MoT
 from .schedulers.scheduler_continuous import WanContinuousFlowMatchScheduler
 from .video_cache_replacement import (
+    action_visible_video_token_indices,
     build_video_cache_stats,
+    mix_replacement_video_cache,
     normalize_video_layer_indices,
     select_replacement_video_cache,
 )
@@ -1028,6 +1030,11 @@ class FastWAM(torch.nn.Module):
         disabled_video_layers: Optional[Sequence[int]] = None,
         replacement_input_image: Optional[torch.Tensor] = None,
         replacement_video_layers: Optional[Sequence[int]] = None,
+        retained_current_video_token_indices: Optional[Sequence[int]] = None,
+        retained_current_video_heads_by_layer: Optional[
+            Mapping[int, Sequence[int]]
+        ] = None,
+        expected_video_cache_layout: Optional[Mapping[str, Any]] = None,
         return_video_cache_stats: bool = False,
     ) -> dict[str, Any]:
         self.eval()
@@ -1042,6 +1049,23 @@ class FastWAM(torch.nn.Module):
             num_layers=self.mot.num_layers,
         )
         replacement_enabled = bool(replacement_video_layers_tuple)
+        token_hybrid_enabled = retained_current_video_token_indices is not None
+        head_hybrid_enabled = retained_current_video_heads_by_layer is not None
+        if token_hybrid_enabled and head_hybrid_enabled:
+            raise ValueError(
+                "Token- and head-granularity video-cache masks are mutually exclusive."
+            )
+        if (token_hybrid_enabled or head_hybrid_enabled) and not replacement_enabled:
+            raise ValueError(
+                "A retained-current token/head mask requires donor input and non-empty "
+                "replacement_video_layers."
+            )
+        if expected_video_cache_layout is not None and not (
+            token_hybrid_enabled or head_hybrid_enabled
+        ):
+            raise ValueError(
+                "`expected_video_cache_layout` is only valid with a hybrid token/head mask."
+            )
         if replacement_enabled != (replacement_input_image is not None):
             raise ValueError(
                 "`replacement_input_image` and a non-empty `replacement_video_layers` "
@@ -1249,6 +1273,56 @@ class FastWAM(torch.nn.Module):
         )
         video_attention_mask = attention_mask[:video_seq_len, :video_seq_len]
         action_attention_mask = attention_mask[video_seq_len:, :]
+        action_visible_indices = action_visible_video_token_indices(
+            action_attention_mask,
+            video_seq_len=video_seq_len,
+        )
+        if expected_video_cache_layout is not None:
+            expected_layout_values = {
+                "video_seq_len": int(expected_video_cache_layout["video_seq_len"]),
+                "action_visible_token_indices": tuple(
+                    int(index)
+                    for index in expected_video_cache_layout[
+                        "action_visible_token_indices"
+                    ]
+                ),
+                "tokens_per_frame": int(
+                    expected_video_cache_layout["tokens_per_frame"]
+                ),
+                "num_layers": int(expected_video_cache_layout["num_layers"]),
+                "num_heads": int(expected_video_cache_layout["num_heads"]),
+                "head_dim": int(expected_video_cache_layout["head_dim"]),
+            }
+            observed_layout_values = {
+                "video_seq_len": video_seq_len,
+                "action_visible_token_indices": action_visible_indices,
+                "tokens_per_frame": int(tokens_per_frame),
+                "num_layers": int(self.mot.num_layers),
+                "num_heads": int(self.mot.num_heads),
+                "head_dim": int(self.mot.attn_head_dim),
+            }
+            if "video_grid_size" in expected_video_cache_layout:
+                expected_layout_values["video_grid_size"] = tuple(
+                    int(value)
+                    for value in expected_video_cache_layout["video_grid_size"]
+                )
+                observed_layout_values["video_grid_size"] = (
+                    int(_f_video),
+                    int(_h_video),
+                    int(_w_video),
+                )
+            if "input_image_shape" in expected_video_cache_layout:
+                expected_layout_values["input_image_shape"] = tuple(
+                    int(value)
+                    for value in expected_video_cache_layout["input_image_shape"]
+                )
+                observed_layout_values["input_image_shape"] = tuple(input_image.shape)
+            if observed_layout_values != expected_layout_values:
+                raise ValueError(
+                    "Runtime video-cache layout drifted from the frozen hybrid-mask "
+                    f"manifest: observed={observed_layout_values}, "
+                    f"expected={expected_layout_values}."
+                )
         if compile_action_infer:
             if not hasattr(self, "_prefill_video_cache_compiled"):
                 self._prefill_video_cache_compiled = torch.compile(
@@ -1288,6 +1362,7 @@ class FastWAM(torch.nn.Module):
         replacement_video_cache_v = None
         replacement_video_seq_len = None
         replacement_tokens_per_frame = None
+        hybrid_video_cache_audit = None
         if replacement_video_prepared is not None:
             replacement_video_tokens = replacement_video_prepared[0]
             replacement_video_seq_len = int(replacement_video_tokens.shape[1])
@@ -1314,14 +1389,39 @@ class FastWAM(torch.nn.Module):
                 replacement_video_cache_v = [
                     cache.clone() for cache in replacement_video_cache_v
                 ]
-            video_cache_k, video_cache_v = select_replacement_video_cache(
-                current_cache_k=current_video_cache_k,
-                current_cache_v=current_video_cache_v,
-                replacement_cache_k=replacement_video_cache_k,
-                replacement_cache_v=replacement_video_cache_v,
-                replacement_video_layers=replacement_video_layers_tuple,
-                num_layers=self.mot.num_layers,
-            )
+            if token_hybrid_enabled or head_hybrid_enabled:
+                video_cache_k, video_cache_v, hybrid_video_cache_audit = (
+                    mix_replacement_video_cache(
+                        current_cache_k=current_video_cache_k,
+                        current_cache_v=current_video_cache_v,
+                        replacement_cache_k=replacement_video_cache_k,
+                        replacement_cache_v=replacement_video_cache_v,
+                        replacement_video_layers=replacement_video_layers_tuple,
+                        action_visible_token_indices=action_visible_indices,
+                        retained_current_token_indices=(
+                            retained_current_video_token_indices
+                            if token_hybrid_enabled
+                            else None
+                        ),
+                        retained_current_heads_by_layer=(
+                            retained_current_video_heads_by_layer
+                            if head_hybrid_enabled
+                            else None
+                        ),
+                        num_heads=int(self.mot.num_heads),
+                        head_dim=int(self.mot.attn_head_dim),
+                        num_layers=self.mot.num_layers,
+                    )
+                )
+            else:
+                video_cache_k, video_cache_v = select_replacement_video_cache(
+                    current_cache_k=current_video_cache_k,
+                    current_cache_v=current_video_cache_v,
+                    replacement_cache_k=replacement_video_cache_k,
+                    replacement_cache_v=replacement_video_cache_v,
+                    replacement_video_layers=replacement_video_layers_tuple,
+                    num_layers=self.mot.num_layers,
+                )
 
         video_cache_stats = None
         if return_video_cache_stats:
@@ -1344,10 +1444,26 @@ class FastWAM(torch.nn.Module):
                     "current_video_seq_len": video_seq_len,
                     "replacement_video_seq_len": replacement_video_seq_len,
                     "current_video_tokens_per_frame": int(tokens_per_frame),
+                    "current_video_grid_size": [
+                        int(_f_video),
+                        int(_h_video),
+                        int(_w_video),
+                    ],
+                    "current_input_image_shape": list(input_image.shape),
                     "replacement_video_tokens_per_frame": replacement_tokens_per_frame,
                     "action_attention_mask_shape": list(action_attention_mask.shape),
+                    "action_visible_video_token_indices": list(action_visible_indices),
+                    "action_visible_video_token_count": len(action_visible_indices),
+                    "num_heads": int(self.mot.num_heads),
+                    "head_dim": int(self.mot.attn_head_dim),
+                    "hybrid_video_cache": hybrid_video_cache_audit,
                 }
             )
+            if hybrid_video_cache_audit is not None:
+                hybrid_source = "hybrid_" + str(hybrid_video_cache_audit["mode"])
+                for layer_entry in video_cache_stats["layers"]:
+                    if int(layer_entry["layer"]) in replacement_video_layers_tuple:
+                        layer_entry["selected_source"] = hybrid_source
 
         if replacement_enabled:
             current_video_cache_k = []
