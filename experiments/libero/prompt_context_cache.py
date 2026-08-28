@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import gc
 import logging
 from pathlib import Path
+from typing import Iterable
 
 import torch
 
@@ -29,6 +31,48 @@ def get_cached_prompt_context(
         context, context_mask = model.encode_prompt(prompt)
         cache[prompt] = (context.detach(), context_mask.detach())
     return cache[prompt]
+
+
+@torch.no_grad()
+def prewarm_prompt_contexts_and_release_text_encoder(
+    model: torch.nn.Module,
+    prompts: Iterable[str],
+) -> int:
+    """Encode fixed prompts, retain CPU contexts, then release the text encoder."""
+
+    ordered_prompts = tuple(dict.fromkeys(str(prompt) for prompt in prompts))
+    if not ordered_prompts or any(not prompt for prompt in ordered_prompts):
+        raise ValueError("Prompt prewarm requires at least one non-empty prompt.")
+    if getattr(model, "text_encoder", None) is None:
+        raise ValueError("Prompt prewarm requires a loaded text encoder.")
+
+    for prompt in ordered_prompts:
+        context, context_mask = get_cached_prompt_context(model, prompt)
+        cache = getattr(model, "_eval_prompt_context_cache")
+        cache[prompt] = (
+            context.detach().to(device="cpu"),
+            context_mask.detach().to(device="cpu"),
+        )
+        del context, context_mask
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    text_encoder = getattr(model, "text_encoder")
+    tokenizer = getattr(model, "tokenizer", None)
+    model.text_encoder = None
+    if hasattr(model, "tokenizer"):
+        model.tokenizer = None
+    if hasattr(model, "text_encoder_device"):
+        model.text_encoder_device = None
+    del text_encoder, tokenizer
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    logging.info(
+        "Prewarmed %d prompt contexts on the model text encoder and released it.",
+        len(ordered_prompts),
+    )
+    return len(ordered_prompts)
 
 
 def load_prompt_context_cache(model: torch.nn.Module, cache_path: Path) -> int:

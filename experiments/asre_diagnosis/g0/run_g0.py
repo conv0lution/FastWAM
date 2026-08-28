@@ -69,6 +69,8 @@ def _run_stage(
     command: Sequence[str], *, log_path: Path, environment: Mapping[str, str]
 ) -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
+    stage_name = log_path.stem
+    print(f"[G0] Starting {stage_name}; log: {log_path}", flush=True)
     with log_path.open("a", encoding="utf-8") as handle:
         handle.write(f"\n[{now_iso()}] {shlex.join(command)}\n")
         handle.flush()
@@ -84,6 +86,7 @@ def _run_stage(
         raise RuntimeError(
             f"G0 stage exited {process.returncode}; inspect {log_path}."
         )
+    print(f"[G0] Completed {stage_name}", flush=True)
 
 
 def _validate_existing_preflight(

@@ -44,6 +44,10 @@ def test_g0_condition_command_uses_normal_suite_text_and_no_ddp(tmp_path: Path) 
     assert f"ASRE_DIAGNOSIS.protocol={G0_PROTOCOL}" in command
     assert "model.load_text_encoder=true" in command
     assert "EVALUATION.prompt_context_cache_path=null" in command
+    assert "EVALUATION.text_encoder_device=cuda:0" in command
+    assert (
+        "EVALUATION.prewarm_suite_prompts_and_release_text_encoder=true" in command
+    )
     assert "EVALUATION.task_suite_name=libero_object" in command
     assert "ASRE_DIAGNOSIS.replacement_video_layers=[15,16,17,18,19,20,21,22,23,24,25,26,27,28,29]" in command
     assert "torchrun" not in joined

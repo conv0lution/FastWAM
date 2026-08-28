@@ -38,6 +38,7 @@ from experiments.libero.worker_pool import pop_task, write_worker_status
 from experiments.libero.prompt_context_cache import (
     get_cached_prompt_context as _get_cached_prompt_context,
     load_prompt_context_cache as _load_prompt_context_cache,
+    prewarm_prompt_contexts_and_release_text_encoder,
 )
 from experiments.asre_diagnosis.common import (
     G0_PROTOCOL,
@@ -1547,6 +1548,44 @@ def eval_single_process(cfg: DictConfig):
         if len(set(task_ids)) != len(task_ids):
             raise ValueError(f"EVALUATION.task_ids contains duplicates: {task_ids}")
 
+    prewarm_suite_prompts = bool(
+        cfg.EVALUATION.get(
+            "prewarm_suite_prompts_and_release_text_encoder", False
+        )
+    )
+    prompt_context_manifest_sha256 = None
+    prompt_context_count = None
+    if prewarm_suite_prompts:
+        if prompt_context_cache_path is not None:
+            raise ValueError(
+                "Suite prompt prewarm cannot be combined with an external prompt cache."
+            )
+        suite_name = str(cfg.EVALUATION.task_suite_name)
+        suite_object = benchmark.get_benchmark_dict()[suite_name]()
+        suite_prompts = [
+            DEFAULT_PROMPT.format(task=str(suite_object.get_task(task_id).language))
+            for task_id in range(int(suite_object.n_tasks))
+        ]
+        prewarm_prompt_contexts_and_release_text_encoder(model, suite_prompts)
+        prompt_cache = getattr(model, "_eval_prompt_context_cache")
+        prompt_context_manifest_sha256 = sha256_json(
+            {
+                "strategy": "suite_gpu_prewarm_then_text_encoder_release",
+                "task_suite": suite_name,
+                "prompt_template": DEFAULT_PROMPT,
+                "records": [
+                    {
+                        "task_id": task_id,
+                        "prompt": prompt,
+                        "context_sha256": tensor_sha256(prompt_cache[prompt][0]),
+                        "context_mask_sha256": tensor_sha256(prompt_cache[prompt][1]),
+                    }
+                    for task_id, prompt in enumerate(suite_prompts)
+                ],
+            }
+        )
+        prompt_context_count = len(suite_prompts)
+
     donor_bundle = _load_donor_bundle(cfg, task_ids=task_ids)
     run_provenance = {
         **_resolve_round3b_run_provenance(cfg),
@@ -1622,6 +1661,17 @@ def eval_single_process(cfg: DictConfig):
                     if prompt_context_cache_path is not None
                     else "model_text_encoder"
                 ),
+                "prompt_context_strategy": (
+                    "suite_gpu_prewarm_then_text_encoder_release"
+                    if prewarm_suite_prompts
+                    else (
+                        "external_prompt_context_cache"
+                        if prompt_context_cache_path is not None
+                        else "model_text_encoder_on_demand"
+                    )
+                ),
+                "prompt_context_count": prompt_context_count,
+                "prompt_context_manifest_sha256": prompt_context_manifest_sha256,
                 "prompt_template": DEFAULT_PROMPT,
                 "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
                 "mujoco_egl_device_id": os.environ.get("MUJOCO_EGL_DEVICE_ID"),

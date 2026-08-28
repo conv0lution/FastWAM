@@ -9,11 +9,26 @@ import torch
 from experiments.libero.prompt_context_cache import (
     get_cached_prompt_context,
     load_prompt_context_cache,
+    prewarm_prompt_contexts_and_release_text_encoder,
 )
 
 
 class _ModelWithoutTextEncoder:
     text_encoder = None
+
+
+class _PrewarmModel(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.text_encoder = torch.nn.Linear(2, 2)
+        self.text_encoder_device = torch.device("cuda:0")
+        self.tokenizer = object()
+        self.encoded_prompts: list[str] = []
+
+    def encode_prompt(self, prompt: str):
+        self.encoded_prompts.append(prompt)
+        value = float(len(self.encoded_prompts))
+        return torch.full((1, 2, 3), value), torch.ones((1, 2), dtype=torch.bool)
 
 
 class PromptContextCacheTest(unittest.TestCase):
@@ -46,6 +61,24 @@ class PromptContextCacheTest(unittest.TestCase):
         model._eval_prompt_context_cache = {}
         with self.assertRaises(KeyError):
             get_cached_prompt_context(model, "unknown")
+
+    def test_prewarm_retains_contexts_and_releases_text_encoder(self) -> None:
+        model = _PrewarmModel()
+
+        count = prewarm_prompt_contexts_and_release_text_encoder(
+            model, ["prompt one", "prompt two", "prompt one"]
+        )
+
+        self.assertEqual(count, 2)
+        self.assertEqual(model.encoded_prompts, ["prompt one", "prompt two"])
+        self.assertIsNone(model.text_encoder)
+        self.assertIsNone(model.text_encoder_device)
+        self.assertIsNone(model.tokenizer)
+        context, mask = get_cached_prompt_context(model, "prompt two")
+        self.assertEqual(context.device.type, "cpu")
+        self.assertEqual(mask.device.type, "cpu")
+        with self.assertRaises(KeyError):
+            get_cached_prompt_context(model, "unknown prompt")
 
 
 if __name__ == "__main__":

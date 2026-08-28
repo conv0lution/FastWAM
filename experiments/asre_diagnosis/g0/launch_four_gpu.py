@@ -280,6 +280,8 @@ def _expected_metadata(
         "compile_action_infer": True,
         "binarize_gripper": True,
         "text_conditioning_source": "model_text_encoder",
+        "prompt_context_strategy": "suite_gpu_prewarm_then_text_encoder_release",
+        "prompt_context_count": 10,
         "donor_mapping_path": str(provenance.donor_mapping),
         "donor_mapping_sha256": provenance.donor_mapping_sha256,
         "donor_observation_manifest_path": str(provenance.donor_manifest),
@@ -440,6 +442,15 @@ def _inspect_condition(
     )
     if mismatch:
         raise DirectorySafetyError(f"Incompatible condition metadata: {mismatch}.")
+    prompt_digest = metadata.get("prompt_context_manifest_sha256")
+    if (
+        not isinstance(prompt_digest, str)
+        or len(prompt_digest) != 64
+        or any(character not in "0123456789abcdef" for character in prompt_digest)
+    ):
+        raise DirectorySafetyError(
+            f"Invalid prompt-context manifest SHA256 in {metadata_path}."
+        )
     completed: dict[int, Path] = {}
     for path in sorted((condition_dir / runtime.suite).glob("gpu*_task*_results.json")):
         task_id = _validate_result(path, condition, runtime)
@@ -478,6 +489,7 @@ def _condition_command(
         "EVALUATION.device=cuda:0",
         "EVALUATION.text_encoder_device=cuda:0",
         "EVALUATION.prompt_context_cache_path=null",
+        "EVALUATION.prewarm_suite_prompts_and_release_text_encoder=true",
         f"EVALUATION.task_suite_name={runtime.suite}",
         f"EVALUATION.task_ids={compact(list(runtime.task_ids))}",
         f"EVALUATION.num_trials={runtime.num_trials}",
@@ -890,6 +902,27 @@ def launch_suite(
             except Exception as exc:
                 states[condition.name] = {"state": "invalid", "detail": repr(exc)}
                 all_complete = False
+        prompt_context_digests: dict[str, Any] = {}
+        shared_prompt_context_digest = None
+        if all_complete:
+            prompt_context_digests = {
+                condition.name: _read_json(
+                    output_root / condition.name / "run_metadata.json",
+                    "condition metadata",
+                ).get("prompt_context_manifest_sha256")
+                for condition in CONDITIONS
+            }
+            unique_prompt_digests = set(prompt_context_digests.values())
+            if len(prompt_context_digests) != len(CONDITIONS) or len(
+                unique_prompt_digests
+            ) != 1:
+                all_complete = False
+                failure = (
+                    "G0 conditions produced different suite prompt contexts: "
+                    f"{prompt_context_digests}."
+                )
+            else:
+                shared_prompt_context_digest = next(iter(unique_prompt_digests))
         summary = {
             "artifact_type": "asre_g0_launcher_summary",
             "schema_version": 1,
@@ -908,6 +941,7 @@ def launch_suite(
             "all_succeeded": bool(all_complete and failure is None),
             "interrupted": interrupted,
             "failure": failure,
+            "prompt_context_manifest_sha256": shared_prompt_context_digest,
             "launcher_config_sha256": sha256_file(output_root / ROOT_CONFIG),
         }
         atomic_write_json(output_root / SUMMARY, summary)

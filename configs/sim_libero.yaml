@@ -43,6 +43,7 @@ EVALUATION:
   device: cuda
   text_encoder_device: null
   prompt_context_cache_path: null
+  prewarm_suite_prompts_and_release_text_encoder: false
 
 ASRE_DIAGNOSIS:
   enabled: false

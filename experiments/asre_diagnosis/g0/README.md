@@ -23,6 +23,12 @@ existing gripper binarization. Rollout video saving is disabled. Suite task
 language is encoded normally by the checkpoint's text encoder; the frozen
 Spatial prompt cache is deliberately not reused across suites.
 
+Because only four 24 GiB GPUs are available, each worker first encodes all ten
+target-suite prompts with its normal GPU T5 path, moves the exact contexts to
+CPU memory, and releases the T5 weights before rollout. This preserves normal
+suite-specific text conditioning without placing Wan 2.2, T5, and EGL on the
+same GPU during action inference or reusing the frozen Spatial prompt cache.
+
 The wrong-scene donor is the first model-ready policy-query observation after
 30 evaluator dummy/wait steps. The mapping is frozen before outcome inspection:
 
