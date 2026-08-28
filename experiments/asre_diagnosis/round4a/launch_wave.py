@@ -156,6 +156,21 @@ def _gpu_inventory() -> list[dict[str, Any]]:
     return records
 
 
+def stable_gpu_inventory(
+    records: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return only immutable device identity fields for resumable run configs."""
+    keys = (
+        "index",
+        "name",
+        "uuid",
+        "pci_bus_id",
+        "driver_version",
+        "memory_total_mib",
+    )
+    return [{key: record[key] for key in keys} for record in records]
+
+
 def _validate_gpu_ids(values: Sequence[int], runtime: Runtime) -> tuple[int, ...]:
     gpu_ids = tuple(int(value) for value in values)
     if len(gpu_ids) != len(runtime.condition_indices):
@@ -473,7 +488,7 @@ def _root_identity(
             for slot, index in enumerate(runtime.condition_indices)
         ],
         "provenance": provenance.identity_dict(),
-        "gpu_inventory": list(gpu_inventory),
+        "gpu_inventory": stable_gpu_inventory(gpu_inventory),
     }
     payload["identity_sha256"] = sha256_json(payload)
     return payload

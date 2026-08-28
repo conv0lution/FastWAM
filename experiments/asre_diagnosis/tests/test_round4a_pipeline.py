@@ -21,6 +21,7 @@ from experiments.asre_diagnosis.round4a.launch_offline_wave import (
 from experiments.asre_diagnosis.round4a.launch_wave import (
     Runtime,
     WAVE_CONDITIONS,
+    _root_identity,
     condition_command,
     resolve_runtime,
 )
@@ -81,6 +82,37 @@ def test_four_gpu_two_wave_schedule_is_exact() -> None:
     assert resolve_runtime("full", 2).condition_indices == (3, 4, 6, 7)
     assert resolve_runtime("smoke", 1).condition_indices == (0, 1, 2, 5)
     assert resolve_runtime("smoke", 2).condition_indices == (3, 6)
+
+
+def test_online_resume_identity_ignores_dynamic_free_memory(tmp_path: Path) -> None:
+    runtime = Runtime("full", 1, tuple(range(10)), 10, WAVE_CONDITIONS[1])
+    base = [
+        {
+            "index": index,
+            "name": "GPU",
+            "uuid": f"uuid-{index}",
+            "pci_bus_id": f"bus-{index}",
+            "driver_version": "1",
+            "memory_total_mib": 100,
+            "memory_free_mib_at_launch": 90,
+        }
+        for index in range(4)
+    ]
+    changed = [dict(record, memory_free_mib_at_launch=10) for record in base]
+    kwargs = {
+        "runtime": runtime,
+        "provenance": _provenance(tmp_path),
+        "python_path": Path("/usr/bin/python3"),
+        "gpu_ids": (0, 1, 2, 3),
+        "stagger_seconds": 0.0,
+    }
+    first = _root_identity(gpu_inventory=base, **kwargs)
+    second = _root_identity(gpu_inventory=changed, **kwargs)
+    assert first == second
+    assert all(
+        "memory_free_mib_at_launch" not in record
+        for record in first["gpu_inventory"]
+    )
 
 
 def test_online_and_offline_commands_bind_masks_provenance_and_no_ddp(tmp_path: Path) -> None:

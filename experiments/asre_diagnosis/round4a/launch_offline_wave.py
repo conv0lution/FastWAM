@@ -43,6 +43,7 @@ from experiments.asre_diagnosis.round4a.launch_wave import (  # noqa: E402
     WAVE_CONDITIONS,
     _gpu_inventory,
     _mismatches,
+    stable_gpu_inventory,
 )
 from experiments.asre_diagnosis.round4a.provenance import (  # noqa: E402
     Round4AProvenance,
@@ -331,7 +332,9 @@ def run_launcher(args: argparse.Namespace) -> Path:
         "condition_indices": list(indices),
         "conditions": [conditions[index].name for index in indices],
         "gpu_ids": list(gpu_ids),
-        "gpu_inventory": [inventory_by_id[gpu] for gpu in gpu_ids],
+        "gpu_inventory": stable_gpu_inventory(
+            [inventory_by_id[gpu] for gpu in gpu_ids]
+        ),
         "launch_stagger_seconds": stagger,
         "git_commit_hash": provenance.git_commit_hash,
         "python": str(python_path),
