@@ -52,6 +52,12 @@ class PromptContextCacheTest(unittest.TestCase):
             torch.save(payload, path)
             model = _ModelWithoutTextEncoder()
             self.assertEqual(load_prompt_context_cache(model, path), 1)
+            self.assertEqual(
+                model._eval_prompt_context_cache_metadata["schema_version"], 1
+            )
+            self.assertNotIn(
+                "prompts", model._eval_prompt_context_cache_metadata
+            )
             loaded_context, loaded_mask = get_cached_prompt_context(model, prompt)
         torch.testing.assert_close(loaded_context, context)
         torch.testing.assert_close(loaded_mask, mask)

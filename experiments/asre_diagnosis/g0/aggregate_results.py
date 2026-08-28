@@ -269,6 +269,9 @@ def load_new_suite(
         "donor_mapping_sha256",
         "donor_observation_manifest_sha256",
         "text_conditioning_source",
+        "prompt_context_strategy",
+        "prompt_context_cache_sha256",
+        "prompt_context_manifest_sha256",
     )
     reference = metadata_by_condition[CONDITION_ORDER[0]]
     for condition in CONDITION_ORDER[1:]:
@@ -732,6 +735,10 @@ def aggregate(
                     "dataset_stats_sha256",
                     "donor_mapping_sha256",
                     "donor_observation_manifest_sha256",
+                    "text_conditioning_source",
+                    "prompt_context_strategy",
+                    "prompt_context_cache_sha256",
+                    "prompt_context_manifest_sha256",
                     "torch_version",
                     "cuda_version",
                     "start_timestamp",

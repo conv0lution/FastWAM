@@ -198,6 +198,10 @@ def run_preflight(
             "suite_order": list(SUITE_ORDER),
             "suite_execution": "sequential",
             "condition_execution": "four_parallel_non_ddp_workers",
+            "prompt_context_preparation": (
+                "one_two_gpu_cuda_prestage_then_shared_suite_cache"
+            ),
+            "rollout_worker_load_text_encoder": False,
         },
         "frozen_spatial_reference_files": references,
         "protected_stage1_paths": list(PROTECTED_STAGE1_DIRS),

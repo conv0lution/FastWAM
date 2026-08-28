@@ -65,6 +65,23 @@ def _base_environment(output_root: Path, rendering_gpu: int) -> dict[str, str]:
     return environment
 
 
+def _prompt_cache_environment(
+    base_environment: Mapping[str, str], gpu_ids: Sequence[int]
+) -> dict[str, str]:
+    """Expose two dedicated cards: model on logical 0, T5 on logical 1."""
+
+    if len(gpu_ids) < 2 or gpu_ids[0] == gpu_ids[1]:
+        raise ValueError("G0 prompt preparation requires two distinct physical GPUs.")
+    environment = dict(base_environment)
+    environment.update(
+        {
+            "CUDA_VISIBLE_DEVICES": f"{int(gpu_ids[0])},{int(gpu_ids[1])}",
+            "MUJOCO_EGL_DEVICE_ID": str(int(gpu_ids[0])),
+        }
+    )
+    return environment
+
+
 def _run_stage(
     command: Sequence[str], *, log_path: Path, environment: Mapping[str, str]
 ) -> None:
@@ -216,6 +233,23 @@ def run_driver(args: argparse.Namespace) -> None:
             environment=machinery_environment,
         )
 
+    prompt_cache_root = output_root / "prompt_contexts"
+    _run_stage(
+        [
+            str(python),
+            "-m",
+            "experiments.asre_diagnosis.g0.prepare_prompt_contexts",
+            "--checkpoint",
+            str(checkpoint),
+            "--preflight-report",
+            str(preflight),
+            "--output-root",
+            str(prompt_cache_root),
+        ],
+        log_path=logs / "prepare_prompt_contexts.log",
+        environment=_prompt_cache_environment(environment, gpu_ids),
+    )
+
     for suite in SUITE_ORDER:
         suite_root = output_root / suite
         donor_root = suite_root / "donors"
@@ -243,6 +277,8 @@ def run_driver(args: argparse.Namespace) -> None:
             str(checkpoint),
             "--dataset-stats",
             str(dataset_stats),
+            "--prompt-context-cache",
+            str(prompt_cache_root / f"{suite}.pt"),
             "--donor-mapping",
             str(donor_mapping),
             "--donor-manifest",

@@ -11,7 +11,9 @@ from experiments.asre_diagnosis.g0.launch_four_gpu import (
 )
 
 
-def test_g0_condition_command_uses_normal_suite_text_and_no_ddp(tmp_path: Path) -> None:
+def test_g0_condition_command_uses_shared_suite_prompt_cache_and_no_ddp(
+    tmp_path: Path,
+) -> None:
     artifact = tmp_path / "artifact"
     artifact.write_text("x", encoding="utf-8")
     donor_root = tmp_path / "donors"
@@ -21,6 +23,9 @@ def test_g0_condition_command_uses_normal_suite_text_and_no_ddp(tmp_path: Path) 
         checkpoint_sha256="a" * 64,
         dataset_stats=artifact,
         dataset_stats_sha256="b" * 64,
+        prompt_context_cache=artifact,
+        prompt_context_cache_sha256="1" * 64,
+        prompt_context_manifest_sha256="2" * 64,
         donor_mapping=artifact,
         donor_mapping_sha256="c" * 64,
         donor_manifest=artifact,
@@ -42,12 +47,13 @@ def test_g0_condition_command_uses_normal_suite_text_and_no_ddp(tmp_path: Path) 
     )
     joined = " ".join(command)
     assert f"ASRE_DIAGNOSIS.protocol={G0_PROTOCOL}" in command
-    assert "model.load_text_encoder=true" in command
-    assert "EVALUATION.prompt_context_cache_path=null" in command
-    assert "EVALUATION.text_encoder_device=cuda:0" in command
+    assert "model.load_text_encoder=false" in command
+    assert f"EVALUATION.prompt_context_cache_path={artifact}" in command
+    assert "EVALUATION.text_encoder_device=null" in command
     assert (
-        "EVALUATION.prewarm_suite_prompts_and_release_text_encoder=true" in command
+        "EVALUATION.prewarm_suite_prompts_and_release_text_encoder=false" in command
     )
+    assert "ASRE_DIAGNOSIS.prompt_context_cache_sha256=" + "1" * 64 in command
     assert "EVALUATION.task_suite_name=libero_object" in command
     assert "ASRE_DIAGNOSIS.replacement_video_layers=[15,16,17,18,19,20,21,22,23,24,25,26,27,28,29]" in command
     assert "torchrun" not in joined

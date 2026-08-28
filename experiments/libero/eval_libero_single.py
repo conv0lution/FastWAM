@@ -47,6 +47,7 @@ from experiments.asre_diagnosis.common import (
     ROUND3B_PROTOCOL,
     atomic_write_json,
     build_run_metadata,
+    git_commit,
     get_num_model_layers,
     now_iso,
     resolve_condition,
@@ -1481,6 +1482,7 @@ def eval_single_process(cfg: DictConfig):
     model_dtype = _mixed_precision_to_model_dtype(cfg.get("mixed_precision", "bf16"))
     prompt_context_cache_value = cfg.EVALUATION.get("prompt_context_cache_path")
     prompt_context_cache_path = None
+    prompt_context_cache_file_sha256 = None
     if prompt_context_cache_value is not None:
         prompt_context_cache_path = Path(
             os.path.expanduser(os.path.expandvars(str(prompt_context_cache_value)))
@@ -1491,6 +1493,20 @@ def eval_single_process(cfg: DictConfig):
             )
         cfg.model.load_text_encoder = False
         cfg.EVALUATION.text_encoder_device = None
+        prompt_context_cache_file_sha256 = sha256_file(prompt_context_cache_path)
+        expected_prompt_cache_sha256 = cfg.ASRE_DIAGNOSIS.get(
+            "prompt_context_cache_sha256"
+        )
+        if (
+            expected_prompt_cache_sha256 is not None
+            and str(expected_prompt_cache_sha256) != prompt_context_cache_file_sha256
+        ):
+            raise ValueError(
+                "Prompt-context cache SHA256 mismatch before model load: "
+                f"expected={expected_prompt_cache_sha256}, "
+                f"observed={prompt_context_cache_file_sha256}, "
+                f"path={prompt_context_cache_path}."
+            )
     model = instantiate(
         cfg.model,
         model_dtype=model_dtype,
@@ -1500,8 +1516,22 @@ def eval_single_process(cfg: DictConfig):
     _load_model_checkpoint(model, str(cfg.ckpt))
     model = model.to(model_device).eval()
     _place_text_encoder(model, cfg.EVALUATION.get("text_encoder_device"))
+    loaded_prompt_context_count = None
+    prompt_context_cache_metadata: dict[str, Any] = {}
     if prompt_context_cache_path is not None:
-        _load_prompt_context_cache(model, prompt_context_cache_path)
+        loaded_prompt_context_count = _load_prompt_context_cache(
+            model, prompt_context_cache_path
+        )
+        prompt_context_cache_metadata = dict(
+            getattr(model, "_eval_prompt_context_cache_metadata", {})
+        )
+        # Detect replacement between the pre-load hash check and deserialization.
+        post_load_sha256 = sha256_file(prompt_context_cache_path)
+        if post_load_sha256 != prompt_context_cache_file_sha256:
+            raise ValueError(
+                "Prompt-context cache changed while it was being loaded: "
+                f"{prompt_context_cache_path}."
+            )
 
     num_model_layers = get_num_model_layers(model)
     diagnosis_cfg = cfg.get("ASRE_DIAGNOSIS", {})
@@ -1554,7 +1584,48 @@ def eval_single_process(cfg: DictConfig):
         )
     )
     prompt_context_manifest_sha256 = None
-    prompt_context_count = None
+    prompt_context_count = loaded_prompt_context_count
+    if prompt_context_cache_path is not None:
+        prompt_context_manifest_sha256 = prompt_context_cache_metadata.get(
+            "prompt_context_manifest_sha256"
+        )
+        if str(diagnosis_cfg.get("protocol", "")) == G0_PROTOCOL:
+            expected_g0_cache = {
+                "artifact_type": "asre_g0_suite_prompt_context_cache",
+                "schema_version": 1,
+                "protocol": G0_PROTOCOL,
+                "strategy": "suite_cuda_prompt_context_cache",
+                "text_conditioning_source": "g0_suite_prompt_context_cache",
+                "git_commit_hash": git_commit(project_root),
+                "task_suite": str(cfg.EVALUATION.task_suite_name),
+                "checkpoint_path": str(Path(str(cfg.ckpt)).expanduser().resolve()),
+                "checkpoint_sha256": str(
+                    cfg.ASRE_DIAGNOSIS.get("checkpoint_sha256")
+                ),
+                "prompt_template": DEFAULT_PROMPT,
+                "prompt_count": 10,
+                "encoding_device_type": "cuda",
+                "model_device": "cuda:0",
+                "text_encoder_device": "cuda:1",
+            }
+            g0_cache_mismatches = {
+                key: {
+                    "observed": prompt_context_cache_metadata.get(key),
+                    "expected": value,
+                }
+                for key, value in expected_g0_cache.items()
+                if prompt_context_cache_metadata.get(key) != value
+            }
+            if g0_cache_mismatches:
+                raise ValueError(
+                    "External G0 prompt-context cache is incompatible with this run: "
+                    f"{g0_cache_mismatches}."
+                )
+            if (
+                not isinstance(prompt_context_manifest_sha256, str)
+                or len(prompt_context_manifest_sha256) != 64
+            ):
+                raise ValueError("External G0 prompt cache has no valid semantic digest.")
     if prewarm_suite_prompts:
         if prompt_context_cache_path is not None:
             raise ValueError(
@@ -1657,7 +1728,12 @@ def eval_single_process(cfg: DictConfig):
                     ),
                 },
                 "text_conditioning_source": (
-                    "round1_state_bank_prompt_context_cache"
+                    str(
+                        prompt_context_cache_metadata.get(
+                            "text_conditioning_source",
+                            "round1_state_bank_prompt_context_cache",
+                        )
+                    )
                     if prompt_context_cache_path is not None
                     else "model_text_encoder"
                 ),
@@ -1665,7 +1741,11 @@ def eval_single_process(cfg: DictConfig):
                     "suite_gpu_prewarm_then_text_encoder_release"
                     if prewarm_suite_prompts
                     else (
-                        "external_prompt_context_cache"
+                        str(
+                            prompt_context_cache_metadata.get(
+                                "strategy", "external_prompt_context_cache"
+                            )
+                        )
                         if prompt_context_cache_path is not None
                         else "model_text_encoder_on_demand"
                     )

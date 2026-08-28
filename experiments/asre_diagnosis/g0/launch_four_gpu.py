@@ -48,6 +48,12 @@ from experiments.asre_diagnosis.g0.definitions import (
     runtime_for,
     validate_gpu_mapping,
 )
+from experiments.asre_diagnosis.g0.prepare_prompt_contexts import (
+    PROMPT_CONTEXT_STRATEGY,
+    TEXT_CONDITIONING_SOURCE,
+    _expected_tasks_from_preflight,
+    validate_prompt_context_cache,
+)
 from experiments.asre_diagnosis.round3b.donor import OnlineDonorBundle
 
 
@@ -66,6 +72,9 @@ class Provenance:
     checkpoint_sha256: str
     dataset_stats: Path
     dataset_stats_sha256: str
+    prompt_context_cache: Path
+    prompt_context_cache_sha256: str
+    prompt_context_manifest_sha256: str
     donor_mapping: Path
     donor_mapping_sha256: str
     donor_manifest: Path
@@ -141,6 +150,9 @@ def _load_provenance(args: argparse.Namespace, suite: str) -> Provenance:
         )
     checkpoint = _resolve_file(args.checkpoint, "checkpoint")
     dataset_stats = _resolve_file(args.dataset_stats, "dataset statistics")
+    prompt_context_cache = _resolve_file(
+        args.prompt_context_cache, "G0 suite prompt-context cache"
+    )
     mapping = _resolve_file(args.donor_mapping, "donor mapping")
     manifest = _resolve_file(args.donor_manifest, "donor observation manifest")
     donor_root = args.donor_root.expanduser().resolve()
@@ -160,6 +172,16 @@ def _load_provenance(args: argparse.Namespace, suite: str) -> Provenance:
         raise ValueError("G0 preflight Git commit differs from the current checkout.")
     if machinery.get("git_commit_hash") != git_commit(project_root):
         raise ValueError("G0 machinery report Git commit differs from the current checkout.")
+    expected_prompt_context_cache = (
+        Path(str(preflight.get("output_root", ""))).resolve()
+        / "prompt_contexts"
+        / f"{suite}.pt"
+    )
+    if prompt_context_cache != expected_prompt_context_cache:
+        raise ValueError(
+            "Launcher prompt cache is not the suite artifact belonging to preflight: "
+            f"{prompt_context_cache} != {expected_prompt_context_cache}."
+        )
     expected_checkpoint = preflight.get("checkpoint", {})
     expected_stats = preflight.get("dataset_statistics", {})
     if expected_checkpoint.get("path") != str(checkpoint) or expected_stats.get(
@@ -172,6 +194,22 @@ def _load_provenance(args: argparse.Namespace, suite: str) -> Provenance:
         "dataset_stats_sha256"
     ) != stats_digest:
         raise ValueError("Machinery and preflight artifact hashes disagree.")
+    prompt_context_cache_sha256 = sha256_file(prompt_context_cache)
+    prompt_cache_payload = validate_prompt_context_cache(
+        prompt_context_cache,
+        suite=suite,
+        checkpoint=checkpoint,
+        checkpoint_sha256=checkpoint_digest,
+        expected_tasks=_expected_tasks_from_preflight(preflight, suite),
+        expected_git_commit=git_commit(project_root),
+    )
+    if sha256_file(prompt_context_cache) != prompt_context_cache_sha256:
+        raise ValueError(
+            "G0 prompt-context cache changed while launcher provenance was validated."
+        )
+    prompt_context_manifest_sha256 = str(
+        prompt_cache_payload["prompt_context_manifest_sha256"]
+    )
     bundle = OnlineDonorBundle.load(
         mapping_path=mapping,
         observation_manifest_path=manifest,
@@ -191,6 +229,9 @@ def _load_provenance(args: argparse.Namespace, suite: str) -> Provenance:
         checkpoint_sha256=checkpoint_digest,
         dataset_stats=dataset_stats,
         dataset_stats_sha256=stats_digest,
+        prompt_context_cache=prompt_context_cache,
+        prompt_context_cache_sha256=prompt_context_cache_sha256,
+        prompt_context_manifest_sha256=prompt_context_manifest_sha256,
         donor_mapping=mapping,
         donor_mapping_sha256=bundle.mapping_sha256,
         donor_manifest=manifest,
@@ -279,9 +320,12 @@ def _expected_metadata(
         "replan_steps": runtime.replan_steps,
         "compile_action_infer": True,
         "binarize_gripper": True,
-        "text_conditioning_source": "model_text_encoder",
-        "prompt_context_strategy": "suite_gpu_prewarm_then_text_encoder_release",
+        "prompt_context_cache_path": str(provenance.prompt_context_cache),
+        "prompt_context_cache_sha256": provenance.prompt_context_cache_sha256,
+        "text_conditioning_source": TEXT_CONDITIONING_SOURCE,
+        "prompt_context_strategy": PROMPT_CONTEXT_STRATEGY,
         "prompt_context_count": 10,
+        "prompt_context_manifest_sha256": provenance.prompt_context_manifest_sha256,
         "donor_mapping_path": str(provenance.donor_mapping),
         "donor_mapping_sha256": provenance.donor_mapping_sha256,
         "donor_observation_manifest_path": str(provenance.donor_manifest),
@@ -483,13 +527,13 @@ def _condition_command(
         str(project_root / "experiments/libero/eval_libero_single.py"),
         f"task={TASK_CONFIG}",
         f"ckpt={provenance.checkpoint}",
-        "model.load_text_encoder=true",
+        "model.load_text_encoder=false",
         "gpu_id=0",
         f"seed={SEED}",
         "EVALUATION.device=cuda:0",
-        "EVALUATION.text_encoder_device=cuda:0",
-        "EVALUATION.prompt_context_cache_path=null",
-        "EVALUATION.prewarm_suite_prompts_and_release_text_encoder=true",
+        "EVALUATION.text_encoder_device=null",
+        f"EVALUATION.prompt_context_cache_path={provenance.prompt_context_cache}",
+        "EVALUATION.prewarm_suite_prompts_and_release_text_encoder=false",
         f"EVALUATION.task_suite_name={runtime.suite}",
         f"EVALUATION.task_ids={compact(list(runtime.task_ids))}",
         f"EVALUATION.num_trials={runtime.num_trials}",
@@ -513,6 +557,7 @@ def _condition_command(
         "ASRE_DIAGNOSIS.save_rollout_video=false",
         f"ASRE_DIAGNOSIS.checkpoint_sha256={provenance.checkpoint_sha256}",
         f"ASRE_DIAGNOSIS.dataset_stats_sha256={provenance.dataset_stats_sha256}",
+        f"ASRE_DIAGNOSIS.prompt_context_cache_sha256={provenance.prompt_context_cache_sha256}",
         f"ASRE_DIAGNOSIS.donor_mapping_path={provenance.donor_mapping}",
         f"ASRE_DIAGNOSIS.donor_mapping_sha256={provenance.donor_mapping_sha256}",
         f"ASRE_DIAGNOSIS.donor_observation_manifest_path={provenance.donor_manifest}",
@@ -956,6 +1001,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--mode", choices=("smoke", "full"), required=True)
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--dataset-stats", type=Path, required=True)
+    parser.add_argument("--prompt-context-cache", type=Path, required=True)
     parser.add_argument("--donor-mapping", type=Path, required=True)
     parser.add_argument("--donor-manifest", type=Path, required=True)
     parser.add_argument("--donor-root", type=Path, required=True)

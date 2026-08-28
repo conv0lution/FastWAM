@@ -20,14 +20,21 @@ independent non-DDP workers run concurrently:
 Each suite uses tasks 0–9, trials 0–9, seed 42, action horizon 32, 10
 inference steps, a 10-step replan interval, compiled action inference, and the
 existing gripper binarization. Rollout video saving is disabled. Suite task
-language is encoded normally by the checkpoint's text encoder; the frozen
-Spatial prompt cache is deliberately not reused across suites.
+language is encoded normally by the model's CUDA T5 path; the frozen Spatial
+prompt cache is deliberately not reused across suites.
 
-Because only four 24 GiB GPUs are available, each worker first encodes all ten
-target-suite prompts with its normal GPU T5 path, moves the exact contexts to
-CPU memory, and releases the T5 weights before rollout. This preserves normal
-suite-specific text conditioning without placing Wan 2.2, T5, and EGL on the
-same GPU during action inference or reusing the frozen Spatial prompt cache.
+Before any rollout, one preparation process exposes two selected cards: the
+Fast-WAM model is instantiated on logical `cuda:0` and T5 on logical `cuda:1`.
+It encodes all 30 target-suite prompts once, writes one immutable cache per
+suite, validates every tensor/hash/task description, and exits. The checkpoint
+does not contain T5 weights, so checkpoint loading cannot alter these contexts;
+the cache is nevertheless bound to the formal checkpoint hash and Git commit.
+
+All four smoke/full workers then start with `model.load_text_encoder=false` and
+load the same suite cache on CPU. This preserves the normal CUDA encoding path
+while eliminating T5 from every rollout worker's model-construction peak. The
+launcher and worker both verify the cache file SHA256, and the launcher also
+requires the suite/checkpoint/task semantic manifest to match exactly.
 
 The wrong-scene donor is the first model-ready policy-query observation after
 30 evaluator dummy/wait steps. The mapping is frozen before outcome inspection:
@@ -106,6 +113,10 @@ Artifacts are rooted at `asre_results/g0_cross_suite/`:
 ```text
 preflight_report.json
 machinery_report.json
+prompt_contexts/
+  libero_object.pt
+  libero_goal.pt
+  libero_10.pt
 libero_object/{donors,smoke,full}/
 libero_goal/{donors,smoke,full}/
 libero_10/{donors,smoke,full}/
@@ -120,6 +131,7 @@ aggregate/
   result_summary_for_gpt.md
   plots/
 logs/
+  prepare_prompt_contexts.log
 ```
 
 The three new suite analyses are primary. LIBERO-Spatial is imported from the

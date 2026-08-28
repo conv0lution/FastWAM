@@ -95,5 +95,10 @@ def load_prompt_context_cache(model: torch.nn.Module, cache_path: Path) -> int:
             raise TypeError(f"Prompt cache tensors are missing for {prompt!r} in {cache_path}.")
         cache[str(prompt)] = (context.detach().cpu(), context_mask.detach().cpu())
     setattr(model, "_eval_prompt_context_cache", cache)
+    setattr(
+        model,
+        "_eval_prompt_context_cache_metadata",
+        {key: value for key, value in payload.items() if key != "prompts"},
+    )
     logging.info("Loaded %d fixed prompt contexts from %s", len(cache), cache_path)
     return len(cache)
