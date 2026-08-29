@@ -46,6 +46,7 @@ from experiments.asre_diagnosis.common import (
     ROUND3A_PROTOCOL,
     ROUND3B_PROTOCOL,
     ROUND4A_PROTOCOL,
+    ROUND4B_PROTOCOL,
     atomic_write_json,
     build_run_metadata,
     git_commit,
@@ -60,6 +61,11 @@ from experiments.asre_diagnosis.round4a.masks import (
     Round4AMaskSpec,
     load_mask_manifest,
     load_mask_spec,
+)
+from experiments.asre_diagnosis.round4b.basis import (
+    RuntimeBasisSpec,
+    load_runtime_basis,
+    validate_basis_manifest,
 )
 from fastwam.datasets.lerobot.processors.fastwam_processor import FastWAMProcessor
 from fastwam.datasets.lerobot.utils.normalizer import load_dataset_stats_from_json
@@ -147,7 +153,9 @@ def _load_donor_bundle(
         if diagnosis_cfg.get(key) is not None
         and str(diagnosis_cfg.get(key)).strip() != ""
     }
-    if protocol not in {ROUND3B_PROTOCOL, G0_PROTOCOL, ROUND4A_PROTOCOL}:
+    if protocol not in {
+        ROUND3B_PROTOCOL, G0_PROTOCOL, ROUND4A_PROTOCOL, ROUND4B_PROTOCOL
+    }:
         if configured:
             raise ValueError(
                 "Donor artifacts are only valid for replacement-capable ASRE protocols; "
@@ -262,6 +270,38 @@ def _load_round3b_donor_bundle(
 ) -> Optional[OnlineDonorBundle]:
     """Backward-compatible alias for downstream Round-3B callers."""
     return _load_donor_bundle(cfg, task_ids=task_ids)
+
+
+def _load_round4b_basis_spec(
+    cfg: DictConfig, model: torch.nn.Module
+) -> Optional[RuntimeBasisSpec]:
+    diagnosis_cfg = cfg.get("ASRE_DIAGNOSIS", {})
+    if str(diagnosis_cfg.get("protocol", "")) != ROUND4B_PROTOCOL:
+        return None
+    path = _resolve_required_artifact_path(
+        diagnosis_cfg.get("subspace_basis_manifest_path"),
+        label="subspace_basis_manifest_path",
+        protocol_label="ASRE Round 4B",
+    )
+    digest = str(diagnosis_cfg.get("subspace_basis_manifest_sha256", ""))
+    validate_basis_manifest(path, expected_sha256=digest, verify_files=False)
+    kind = diagnosis_cfg.get("subspace_basis_kind")
+    rank = diagnosis_cfg.get("subspace_rank")
+    if kind in {None, "", "none", "null"}:
+        if rank is not None:
+            raise ValueError("Round-4B endpoint condition cannot configure a rank.")
+        return None
+    if rank is None:
+        raise ValueError("Round-4B projected condition requires subspace_rank.")
+    parameter = next(model.parameters())
+    return load_runtime_basis(
+        manifest_path=path,
+        expected_sha256=digest,
+        basis_kind=str(kind),
+        rank=int(rank),
+        device=parameter.device,
+        dtype=parameter.dtype,
+    )
 
 
 def _resolve_round3b_run_provenance(cfg: DictConfig) -> dict[str, Any]:
@@ -468,6 +508,57 @@ def _resolve_round4a_run_provenance(cfg: DictConfig) -> dict[str, Any]:
         payload[key] = digest
     for key in ("round3b_parent_tag", "g0_parent_tag"):
         payload[key] = str(diagnosis_cfg.get(key))
+    for key, value in payload.items():
+        cfg.ASRE_DIAGNOSIS[key] = value
+    return payload
+
+
+def _resolve_round4b_run_provenance(cfg: DictConfig) -> dict[str, Any]:
+    """Validate the frozen Round-4A parent and all Round-4B run artifacts."""
+    diagnosis_cfg = cfg.get("ASRE_DIAGNOSIS", {})
+    if str(diagnosis_cfg.get("protocol", "")) != ROUND4B_PROTOCOL:
+        return {}
+    stems = (
+        "preflight_report",
+        "machinery_report",
+        "calibration_split_manifest",
+        "subspace_basis_manifest",
+        "subspace_diagnostics",
+        "round4a_summary",
+    )
+    required = [item for stem in stems for item in (f"{stem}_path", f"{stem}_sha256")]
+    required.extend(("round4a_parent_tag", "round4a_parent_commit"))
+    missing = [
+        key
+        for key in required
+        if diagnosis_cfg.get(key) is None or str(diagnosis_cfg.get(key)).strip() == ""
+    ]
+    if missing:
+        raise ValueError(f"Round-4B run provenance is incomplete: {missing}.")
+    payload: dict[str, Any] = {}
+    for stem in stems:
+        path_key = f"{stem}_path"
+        digest_key = f"{stem}_sha256"
+        path = _resolve_required_artifact_path(
+            diagnosis_cfg.get(path_key),
+            label=path_key,
+            protocol_label="ASRE Round 4B",
+        )
+        digest = sha256_file(path)
+        if digest != str(diagnosis_cfg.get(digest_key)):
+            raise ValueError(f"Round-4B artifact SHA256 mismatch: {path}")
+        payload[path_key] = str(path)
+        payload[digest_key] = digest
+    validate_basis_manifest(
+        Path(payload["subspace_basis_manifest_path"]),
+        expected_sha256=payload["subspace_basis_manifest_sha256"],
+        verify_files=False,
+    )
+    parent_commit = str(diagnosis_cfg.get("round4a_parent_commit"))
+    if len(parent_commit) != 40 or any(c not in "0123456789abcdef" for c in parent_commit):
+        raise ValueError("Round-4B parent commit must be a full lowercase Git SHA.")
+    payload["round4a_parent_tag"] = str(diagnosis_cfg.get("round4a_parent_tag"))
+    payload["round4a_parent_commit"] = parent_commit
     for key, value in payload.items():
         cfg.ASRE_DIAGNOSIS[key] = value
     return payload
@@ -898,6 +989,17 @@ def _run_prepared_action_inference(
                         f"support Round-4A argument {parameter_name!r}."
                     )
                 call_kwargs[parameter_name] = parameter_value
+        round4b_basis_spec = _load_round4b_basis_spec(cfg, model)
+        if round4b_basis_spec is not None:
+            for parameter_name, parameter_value in (
+                round4b_basis_spec.inference_kwargs().items()
+            ):
+                if parameter_name not in infer_parameters:
+                    raise ValueError(
+                        f"{type(model).__name__}.{infer_method.__name__} does not "
+                        f"support Round-4B argument {parameter_name!r}."
+                    )
+                call_kwargs[parameter_name] = parameter_value
         replacement_layers = tuple(
             int(layer) for layer in diagnosis_cfg.get("replacement_video_layers", ())
         )
@@ -1029,6 +1131,11 @@ def _predict_action_chunk(
             "hybrid_mask_seed": diagnosis_cfg.get("hybrid_mask_seed"),
             "hybrid_mask_manifest_sha256": diagnosis_cfg.get(
                 "hybrid_mask_manifest_sha256"
+            ),
+            "subspace_basis_kind": diagnosis_cfg.get("subspace_basis_kind"),
+            "subspace_rank": diagnosis_cfg.get("subspace_rank"),
+            "subspace_basis_manifest_sha256": diagnosis_cfg.get(
+                "subspace_basis_manifest_sha256"
             ),
             "raw_action": raw_action.detach().to(device="cpu", dtype=torch.float32).numpy(),
             "executed_action": action.copy(),
@@ -1537,6 +1644,30 @@ def _run_task_to_file(
                     )
                 }
             )
+        if str(diagnosis_cfg.get("protocol", "")) == ROUND4B_PROTOCOL:
+            results.update(
+                {
+                    key: diagnosis_cfg.get(key)
+                    for key in (
+                        "subspace_basis_kind",
+                        "subspace_rank",
+                        "subspace_basis_manifest_path",
+                        "subspace_basis_manifest_sha256",
+                        "calibration_split_manifest_path",
+                        "calibration_split_manifest_sha256",
+                        "subspace_diagnostics_path",
+                        "subspace_diagnostics_sha256",
+                        "preflight_report_path",
+                        "preflight_report_sha256",
+                        "machinery_report_path",
+                        "machinery_report_sha256",
+                        "round4a_parent_tag",
+                        "round4a_parent_commit",
+                        "round4a_summary_path",
+                        "round4a_summary_sha256",
+                    )
+                }
+            )
     if worker_id is not None:
         results["worker_id"] = worker_id
     results.update(
@@ -1843,6 +1974,7 @@ def eval_single_process(cfg: DictConfig):
         **_resolve_round3b_run_provenance(cfg),
         **_resolve_g0_run_provenance(cfg),
         **_resolve_round4a_run_provenance(cfg),
+        **_resolve_round4b_run_provenance(cfg),
     }
 
     diagnosis_enabled = bool(diagnosis_cfg.get("enabled", False))
@@ -1917,6 +2049,16 @@ def eval_single_process(cfg: DictConfig):
                     ),
                     "hybrid_mask_manifest_sha256": cfg.ASRE_DIAGNOSIS.get(
                         "hybrid_mask_manifest_sha256"
+                    ),
+                    "subspace_basis_kind": cfg.ASRE_DIAGNOSIS.get(
+                        "subspace_basis_kind"
+                    ),
+                    "subspace_rank": cfg.ASRE_DIAGNOSIS.get("subspace_rank"),
+                    "subspace_basis_manifest_path": cfg.ASRE_DIAGNOSIS.get(
+                        "subspace_basis_manifest_path"
+                    ),
+                    "subspace_basis_manifest_sha256": cfg.ASRE_DIAGNOSIS.get(
+                        "subspace_basis_manifest_sha256"
                     ),
                 },
                 "text_conditioning_source": (
@@ -2007,6 +2149,7 @@ def eval_single_process(cfg: DictConfig):
                 ROUND3B_PROTOCOL,
                 G0_PROTOCOL,
                 ROUND4A_PROTOCOL,
+                ROUND4B_PROTOCOL,
             }:
                 resume_keys.extend(
                     [
@@ -2029,6 +2172,7 @@ def eval_single_process(cfg: DictConfig):
                 ROUND3B_PROTOCOL,
                 G0_PROTOCOL,
                 ROUND4A_PROTOCOL,
+                ROUND4B_PROTOCOL,
             }:
                 resume_keys.extend(
                     [
@@ -2086,6 +2230,27 @@ def eval_single_process(cfg: DictConfig):
                         "g0_summary_path",
                         "g0_summary_sha256",
                         "g0_gate_classification",
+                    ]
+                )
+            if str(cfg.ASRE_DIAGNOSIS.get("protocol")) == ROUND4B_PROTOCOL:
+                resume_keys.extend(
+                    [
+                        "preflight_report_path",
+                        "preflight_report_sha256",
+                        "machinery_report_path",
+                        "machinery_report_sha256",
+                        "calibration_split_manifest_path",
+                        "calibration_split_manifest_sha256",
+                        "subspace_basis_manifest_path",
+                        "subspace_basis_manifest_sha256",
+                        "subspace_diagnostics_path",
+                        "subspace_diagnostics_sha256",
+                        "subspace_basis_kind",
+                        "subspace_rank",
+                        "round4a_parent_tag",
+                        "round4a_parent_commit",
+                        "round4a_summary_path",
+                        "round4a_summary_sha256",
                     ]
                 )
             mismatches = {

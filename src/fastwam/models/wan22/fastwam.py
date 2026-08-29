@@ -16,6 +16,7 @@ from .video_cache_replacement import (
     build_video_cache_stats,
     mix_replacement_video_cache,
     normalize_video_layer_indices,
+    project_replacement_video_cache,
     select_replacement_video_cache,
 )
 
@@ -1034,8 +1035,15 @@ class FastWAM(torch.nn.Module):
         retained_current_video_heads_by_layer: Optional[
             Mapping[int, Sequence[int]]
         ] = None,
+        feature_projection_bases_by_layer: Optional[
+            Mapping[int, Mapping[str, torch.Tensor]]
+        ] = None,
+        feature_projection_rank: Optional[int] = None,
         expected_video_cache_layout: Optional[Mapping[str, Any]] = None,
         return_video_cache_stats: bool = False,
+        return_video_cache_deltas: bool = False,
+        video_cache_delta_layers: Optional[Sequence[int]] = None,
+        cache_only: bool = False,
     ) -> dict[str, Any]:
         self.eval()
         disabled_video_layers_tuple = normalize_video_layer_indices(
@@ -1051,21 +1059,53 @@ class FastWAM(torch.nn.Module):
         replacement_enabled = bool(replacement_video_layers_tuple)
         token_hybrid_enabled = retained_current_video_token_indices is not None
         head_hybrid_enabled = retained_current_video_heads_by_layer is not None
-        if token_hybrid_enabled and head_hybrid_enabled:
+        feature_projection_enabled = feature_projection_bases_by_layer is not None
+        if sum((token_hybrid_enabled, head_hybrid_enabled, feature_projection_enabled)) > 1:
             raise ValueError(
-                "Token- and head-granularity video-cache masks are mutually exclusive."
+                "Token masks, head masks, and feature projection are mutually exclusive."
             )
-        if (token_hybrid_enabled or head_hybrid_enabled) and not replacement_enabled:
+        if (
+            token_hybrid_enabled or head_hybrid_enabled or feature_projection_enabled
+        ) and not replacement_enabled:
             raise ValueError(
-                "A retained-current token/head mask requires donor input and non-empty "
+                "A cache hybrid/projection requires donor input and non-empty "
                 "replacement_video_layers."
             )
+        if feature_projection_enabled:
+            if feature_projection_rank is None:
+                raise ValueError("Feature projection requires `feature_projection_rank`.")
+        elif feature_projection_rank is not None:
+            raise ValueError(
+                "`feature_projection_rank` requires feature_projection_bases_by_layer."
+            )
         if expected_video_cache_layout is not None and not (
-            token_hybrid_enabled or head_hybrid_enabled
+            token_hybrid_enabled
+            or head_hybrid_enabled
+            or feature_projection_enabled
+            or return_video_cache_deltas
         ):
             raise ValueError(
-                "`expected_video_cache_layout` is only valid with a hybrid token/head mask."
+                "`expected_video_cache_layout` requires a cache intervention/audit."
             )
+        if cache_only and not return_video_cache_deltas:
+            raise ValueError("`cache_only` requires `return_video_cache_deltas=true`.")
+        if return_video_cache_deltas and not replacement_enabled:
+            raise ValueError("Cache-delta export requires current and donor cache pairs.")
+        delta_layers_tuple = normalize_video_layer_indices(
+            video_cache_delta_layers,
+            argument_name="video_cache_delta_layers",
+            num_layers=self.mot.num_layers,
+        )
+        if return_video_cache_deltas and not delta_layers_tuple:
+            delta_layers_tuple = replacement_video_layers_tuple
+        if delta_layers_tuple and not return_video_cache_deltas:
+            raise ValueError(
+                "`video_cache_delta_layers` requires return_video_cache_deltas=true."
+            )
+        if set(delta_layers_tuple) - set(replacement_video_layers_tuple):
+            raise ValueError("Cache-delta layers must be replacement-enabled layers.")
+        if cache_only and compile_action_infer:
+            raise ValueError("Cache-only calibration must disable compiled inference.")
         if replacement_enabled != (replacement_input_image is not None):
             raise ValueError(
                 "`replacement_input_image` and a non-empty `replacement_video_layers` "
@@ -1389,7 +1429,23 @@ class FastWAM(torch.nn.Module):
                 replacement_video_cache_v = [
                     cache.clone() for cache in replacement_video_cache_v
                 ]
-            if token_hybrid_enabled or head_hybrid_enabled:
+            if feature_projection_enabled:
+                assert feature_projection_bases_by_layer is not None
+                assert feature_projection_rank is not None
+                video_cache_k, video_cache_v, hybrid_video_cache_audit = (
+                    project_replacement_video_cache(
+                        current_cache_k=current_video_cache_k,
+                        current_cache_v=current_video_cache_v,
+                        replacement_cache_k=replacement_video_cache_k,
+                        replacement_cache_v=replacement_video_cache_v,
+                        replacement_video_layers=replacement_video_layers_tuple,
+                        action_visible_token_indices=action_visible_indices,
+                        feature_bases_by_layer=feature_projection_bases_by_layer,
+                        projection_rank=int(feature_projection_rank),
+                        num_layers=self.mot.num_layers,
+                    )
+                )
+            elif token_hybrid_enabled or head_hybrid_enabled:
                 video_cache_k, video_cache_v, hybrid_video_cache_audit = (
                     mix_replacement_video_cache(
                         current_cache_k=current_video_cache_k,
@@ -1465,6 +1521,47 @@ class FastWAM(torch.nn.Module):
                     if int(layer_entry["layer"]) in replacement_video_layers_tuple:
                         layer_entry["selected_source"] = hybrid_source
 
+        cache_deltas = None
+        if return_video_cache_deltas:
+            assert replacement_video_cache_k is not None
+            assert replacement_video_cache_v is not None
+            visible_index = torch.tensor(
+                action_visible_indices,
+                device=current_video_cache_k[delta_layers_tuple[0]].device,
+                dtype=torch.long,
+            )
+            cache_deltas = {
+                kind: {
+                    layer: (
+                        current[layer].index_select(1, visible_index)
+                        - replacement[layer].index_select(1, visible_index)
+                    ).detach()
+                    for layer in delta_layers_tuple
+                }
+                for kind, current, replacement in (
+                    ("k", current_video_cache_k, replacement_video_cache_k),
+                    ("v", current_video_cache_v, replacement_video_cache_v),
+                )
+            }
+        if cache_only:
+            representative_delta = cache_deltas["k"][delta_layers_tuple[0]]
+            return {
+                "video_cache_deltas": cache_deltas,
+                "video_cache_layout": {
+                    "num_layers": int(self.mot.num_layers),
+                    "video_seq_len": video_seq_len,
+                    "action_visible_token_indices": list(action_visible_indices),
+                    "action_visible_token_count": len(action_visible_indices),
+                    "feature_dim": int(representative_delta.shape[-1]),
+                    "num_heads": int(self.mot.num_heads),
+                    "head_dim": int(self.mot.attn_head_dim),
+                    "tokens_per_frame": int(tokens_per_frame),
+                    "video_grid_size": [int(_f_video), int(_h_video), int(_w_video)],
+                    "input_image_shape": list(input_image.shape),
+                    "delta_layers": list(delta_layers_tuple),
+                },
+            }
+
         if replacement_enabled:
             current_video_cache_k = []
             current_video_cache_v = []
@@ -1504,6 +1601,8 @@ class FastWAM(torch.nn.Module):
         }
         if video_cache_stats is not None:
             output["video_cache_stats"] = video_cache_stats
+        if cache_deltas is not None:
+            output["video_cache_deltas"] = cache_deltas
         return output
 
     @torch.no_grad()

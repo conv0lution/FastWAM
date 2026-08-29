@@ -19,6 +19,7 @@ ROUND3A_PROTOCOL = "round3a_late_factorial"
 ROUND3B_PROTOCOL = "round3b_matched_kv_replacement"
 G0_PROTOCOL = "g0_cross_suite_generalization"
 ROUND4A_PROTOCOL = "round4a_matched_content_axis_screen"
+ROUND4B_PROTOCOL = "round4b_low_rank_feature_subspace"
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,12 @@ class DiagnosisCondition:
 class Round4ACondition(DiagnosisCondition):
     hybrid_axis: Optional[str] = None
     mask_seed: Optional[int] = None
+
+
+@dataclass(frozen=True)
+class Round4BCondition(DiagnosisCondition):
+    basis_kind: Optional[str] = None
+    subspace_rank: Optional[int] = None
 
 
 def build_conditions(num_layers: int) -> list[DiagnosisCondition]:
@@ -205,6 +212,27 @@ def build_round4a_conditions(num_layers: int) -> list[Round4ACondition]:
     return conditions
 
 
+def build_round4b_conditions(num_layers: int) -> list[Round4BCondition]:
+    """Build the frozen eight-arm Stage-2 Round-4B subspace matrix."""
+    if num_layers != 30:
+        raise ValueError(
+            "ASRE Round 4B is pre-registered for exactly 30 action layers; "
+            f"the selected model exposes {num_layers}."
+        )
+    early = tuple(range(15))
+    late = tuple(range(15, 30))
+    return [
+        Round4BCondition("current_all", early),
+        Round4BCondition("wrong_all", early, replacement_video_layers=late),
+        Round4BCondition("svd_r256", early, late, "svd", 256),
+        Round4BCondition("random_r256", early, late, "random", 256),
+        Round4BCondition("svd_r768", early, late, "svd", 768),
+        Round4BCondition("random_r768", early, late, "random", 768),
+        Round4BCondition("svd_r1536", early, late, "svd", 1536),
+        Round4BCondition("random_r1536", early, late, "random", 1536),
+    ]
+
+
 def get_num_model_layers(model: torch.nn.Module) -> int:
     mot = getattr(model, "mot", None)
     num_layers = getattr(mot, "num_layers", None)
@@ -343,15 +371,18 @@ def resolve_condition(diagnosis_cfg: Mapping[str, Any], num_layers: int) -> Diag
         ROUND3B_PROTOCOL,
         G0_PROTOCOL,
         ROUND4A_PROTOCOL,
+        ROUND4B_PROTOCOL,
     }:
         raise ValueError(
             f"Unsupported ASRE_DIAGNOSIS.protocol={protocol!r}; expected "
             f"one of {ROUND1_PROTOCOL!r}, {ROUND2_PROTOCOL!r}, or "
             f"{ROUND3A_PROTOCOL!r}, {ROUND3B_PROTOCOL!r}, {G0_PROTOCOL!r}, "
-            f"or {ROUND4A_PROTOCOL!r}."
+            f"or {ROUND4A_PROTOCOL!r}, {ROUND4B_PROTOCOL!r}."
         )
 
-    replacement_protocols = {ROUND3B_PROTOCOL, G0_PROTOCOL, ROUND4A_PROTOCOL}
+    replacement_protocols = {
+        ROUND3B_PROTOCOL, G0_PROTOCOL, ROUND4A_PROTOCOL, ROUND4B_PROTOCOL
+    }
     if protocol in replacement_protocols and mode != "replace_video_kv":
         raise ValueError(
             f"ASRE protocol {protocol!r} requires "
@@ -368,11 +399,13 @@ def resolve_condition(diagnosis_cfg: Mapping[str, Any], num_layers: int) -> Diag
         ROUND3B_PROTOCOL,
         G0_PROTOCOL,
         ROUND4A_PROTOCOL,
+        ROUND4B_PROTOCOL,
     }:
         is_round2 = protocol == ROUND2_PROTOCOL
         is_round3a = protocol == ROUND3A_PROTOCOL
         is_round3b = protocol == ROUND3B_PROTOCOL
         is_round4a = protocol == ROUND4A_PROTOCOL
+        is_round4b = protocol == ROUND4B_PROTOCOL
         round_label = (
             "Round-2"
             if is_round2
@@ -382,6 +415,8 @@ def resolve_condition(diagnosis_cfg: Mapping[str, Any], num_layers: int) -> Diag
             if is_round3b
             else "Round-4A"
             if is_round4a
+            else "Round-4B"
+            if is_round4b
             else "G0"
         )
         conditions = (
@@ -393,6 +428,8 @@ def resolve_condition(diagnosis_cfg: Mapping[str, Any], num_layers: int) -> Diag
             if is_round3b
             else build_round4a_conditions(num_layers)
             if is_round4a
+            else build_round4b_conditions(num_layers)
+            if is_round4b
             else build_g0_conditions(num_layers)
         )
         condition_index = diagnosis_cfg.get("condition_index")
@@ -454,6 +491,24 @@ def resolve_condition(diagnosis_cfg: Mapping[str, Any], num_layers: int) -> Diag
                 raise ValueError(
                     f"Configured hybrid_mask_seed={configured_seed!r} disagrees with "
                     f"{selected.name}: {selected.mask_seed!r}."
+                )
+        if is_round4b:
+            assert isinstance(selected, Round4BCondition)
+            configured_kind = diagnosis_cfg.get("subspace_basis_kind")
+            if configured_kind in {"", "none", "null"}:
+                configured_kind = None
+            if configured_kind != selected.basis_kind:
+                raise ValueError(
+                    f"Configured subspace_basis_kind={configured_kind!r} disagrees "
+                    f"with {selected.name}: {selected.basis_kind!r}."
+                )
+            configured_rank = diagnosis_cfg.get("subspace_rank")
+            if configured_rank is not None:
+                configured_rank = int(configured_rank)
+            if configured_rank != selected.subspace_rank:
+                raise ValueError(
+                    f"Configured subspace_rank={configured_rank!r} disagrees with "
+                    f"{selected.name}: {selected.subspace_rank!r}."
                 )
         return selected
 

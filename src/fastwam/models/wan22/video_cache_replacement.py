@@ -137,6 +137,132 @@ def select_replacement_video_cache(
     )
 
 
+def project_replacement_video_cache(
+    *,
+    current_cache_k: Sequence[torch.Tensor],
+    current_cache_v: Sequence[torch.Tensor],
+    replacement_cache_k: Sequence[torch.Tensor],
+    replacement_cache_v: Sequence[torch.Tensor],
+    replacement_video_layers: Sequence[int],
+    action_visible_token_indices: Sequence[int],
+    feature_bases_by_layer: Mapping[int, Mapping[str, torch.Tensor]],
+    projection_rank: int,
+    num_layers: int,
+) -> tuple[list[torch.Tensor], list[torch.Tensor], dict[str, Any]]:
+    """Project current-minus-donor cache deltas into frozen feature subspaces.
+
+    K and V use independent right-feature bases.  Only action-visible video rows
+    are changed; cache geometry, token count, and head packing remain untouched.
+    """
+    validate_matching_video_cache(
+        current_cache_k=current_cache_k,
+        current_cache_v=current_cache_v,
+        replacement_cache_k=replacement_cache_k,
+        replacement_cache_v=replacement_cache_v,
+        num_layers=num_layers,
+    )
+    layers = normalize_video_layer_indices(
+        replacement_video_layers,
+        argument_name="replacement_video_layers",
+        num_layers=num_layers,
+    )
+    if not layers:
+        raise ValueError("Feature projection requires non-empty replacement layers.")
+    if isinstance(projection_rank, bool) or not isinstance(projection_rank, int):
+        raise TypeError("`projection_rank` must be an integer.")
+    representative = current_cache_k[layers[0]]
+    if representative.ndim != 3:
+        raise ValueError(
+            "Video-cache tensors must have shape [batch,tokens,feature], got "
+            f"{tuple(representative.shape)}."
+        )
+    video_seq_len = int(representative.shape[1])
+    feature_dim = int(representative.shape[2])
+    if projection_rank < 0 or projection_rank > feature_dim:
+        raise ValueError(
+            f"projection_rank must be in [0,{feature_dim}], got {projection_rank}."
+        )
+    visible = _normalize_component_indices(
+        action_visible_token_indices,
+        argument_name="action_visible_token_indices",
+        upper_bound=video_seq_len,
+    )
+    if not visible:
+        raise ValueError("No action-visible video tokens were found at runtime.")
+    if set(feature_bases_by_layer) != set(layers):
+        raise ValueError(
+            "Feature bases must cover exactly every replacement layer; "
+            f"configured={sorted(feature_bases_by_layer)}, expected={list(layers)}."
+        )
+
+    visible_index = torch.tensor(visible, device=representative.device, dtype=torch.long)
+    projected_k = list(current_cache_k)
+    projected_v = list(current_cache_v)
+    layer_audits: list[dict[str, Any]] = []
+    for layer in layers:
+        pair = feature_bases_by_layer[layer]
+        if set(pair) != {"k", "v"}:
+            raise ValueError(f"Layer {layer} feature bases must contain exactly K and V.")
+        kind_audit: dict[str, Any] = {}
+        for kind, current, donor, destination in (
+            ("k", current_cache_k[layer], replacement_cache_k[layer], projected_k),
+            ("v", current_cache_v[layer], replacement_cache_v[layer], projected_v),
+        ):
+            basis = pair[kind]
+            if not isinstance(basis, torch.Tensor) or basis.ndim != 2:
+                raise TypeError(f"Layer {layer} {kind.upper()} basis must be a matrix.")
+            if tuple(basis.shape) != (feature_dim, projection_rank):
+                raise ValueError(
+                    f"Layer {layer} {kind.upper()} basis shape mismatch: "
+                    f"{tuple(basis.shape)} != {(feature_dim, projection_rank)}."
+                )
+            if basis.device != current.device:
+                raise ValueError(
+                    f"Layer {layer} {kind.upper()} basis device mismatch: "
+                    f"{basis.device} != {current.device}."
+                )
+            if not bool(torch.isfinite(basis).all().item()):
+                raise ValueError(f"Layer {layer} {kind.upper()} basis is non-finite.")
+            result = current.clone()
+            donor_rows = donor.index_select(1, visible_index)
+            if projection_rank == 0:
+                projected_rows = donor_rows
+            elif projection_rank == feature_dim:
+                # Preserve the registered full-rank endpoint exactly instead of
+                # adding avoidable mixed-precision roundoff from B @ B.T.
+                projected_rows = current.index_select(1, visible_index)
+            else:
+                current_rows = current.index_select(1, visible_index)
+                compute_dtype = basis.dtype
+                delta = (current_rows - donor_rows).to(dtype=compute_dtype)
+                projected_delta = torch.matmul(torch.matmul(delta, basis), basis.T)
+                projected_rows = donor_rows + projected_delta.to(dtype=donor_rows.dtype)
+            result.index_copy_(1, visible_index, projected_rows)
+            destination[layer] = result
+            kind_audit[kind] = {
+                "basis_shape": list(basis.shape),
+                "basis_dtype": str(basis.dtype),
+                "finite": True,
+            }
+        layer_audits.append({"layer": layer, **kind_audit})
+    return projected_k, projected_v, {
+        "schema_version": 1,
+        "mode": "feature_subspace",
+        "replacement_video_layers": list(layers),
+        "projection_rank": projection_rank,
+        "feature_dim": feature_dim,
+        "video_seq_len": video_seq_len,
+        "action_visible_token_indices": list(visible),
+        "action_visible_token_count": len(visible),
+        "non_action_visible_token_count": video_seq_len - len(visible),
+        "k_v_bases_independent": True,
+        "tokens_modified": False,
+        "heads_modified": False,
+        "shape_preserved": True,
+        "layers": layer_audits,
+    }
+
+
 def action_visible_video_token_indices(
     action_attention_mask: torch.Tensor,
     *,

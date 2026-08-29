@@ -99,6 +99,18 @@ ASRE_DIAGNOSIS:
   g0_summary_path: null
   g0_summary_sha256: null
   g0_gate_classification: null
+  round4a_parent_tag: null
+  round4a_parent_commit: null
+  round4a_summary_path: null
+  round4a_summary_sha256: null
+  calibration_split_manifest_path: null
+  calibration_split_manifest_sha256: null
+  subspace_basis_manifest_path: null
+  subspace_basis_manifest_sha256: null
+  subspace_basis_kind: null
+  subspace_rank: null
+  subspace_diagnostics_path: null
+  subspace_diagnostics_sha256: null
 
 MULTIRUN:
   create_only: false
