@@ -81,6 +81,8 @@ ASRE_DIAGNOSIS:
   self_replacement_report_sha256: null
   machinery_report_path: null
   machinery_report_sha256: null
+  differentiable_path_report_path: null
+  differentiable_path_report_sha256: null
   hybrid_axis: null
   hybrid_mask_seed: null
   hybrid_mask_manifest_path: null
@@ -105,6 +107,8 @@ ASRE_DIAGNOSIS:
   round4a_summary_sha256: null
   calibration_split_manifest_path: null
   calibration_split_manifest_sha256: null
+  state_selection_manifest_path: null
+  state_selection_manifest_sha256: null
   subspace_basis_manifest_path: null
   subspace_basis_manifest_sha256: null
   subspace_basis_kind: null
@@ -119,6 +123,8 @@ ASRE_DIAGNOSIS:
   round4b_summary_sha256: null
   round4b_source_commit: null
   cumulative_energy_analysis_commit: null
+  round4c_summary_path: null
+  round4c_summary_sha256: null
 
 MULTIRUN:
   create_only: false

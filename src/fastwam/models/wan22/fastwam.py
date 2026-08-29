@@ -1,9 +1,11 @@
+import math
 from typing import Any, Mapping, Optional, Sequence, Union
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from PIL import Image
+from torch.utils.checkpoint import checkpoint as activation_checkpoint
 
 from fastwam.utils.logging_config import get_logger
 
@@ -1044,6 +1046,9 @@ class FastWAM(torch.nn.Module):
         return_video_cache_deltas: bool = False,
         video_cache_delta_layers: Optional[Sequence[int]] = None,
         cache_only: bool = False,
+        action_sensitive_interpolation_lambda: Optional[float] = None,
+        action_sensitive_layers: Optional[Sequence[int]] = None,
+        action_sensitive_gradient_checkpointing: bool = False,
     ) -> dict[str, Any]:
         self.eval()
         disabled_video_layers_tuple = normalize_video_layer_indices(
@@ -1060,9 +1065,32 @@ class FastWAM(torch.nn.Module):
         token_hybrid_enabled = retained_current_video_token_indices is not None
         head_hybrid_enabled = retained_current_video_heads_by_layer is not None
         feature_projection_enabled = feature_projection_bases_by_layer is not None
-        if sum((token_hybrid_enabled, head_hybrid_enabled, feature_projection_enabled)) > 1:
+        action_sensitive_enabled = (
+            action_sensitive_interpolation_lambda is not None
+            or action_sensitive_layers is not None
+        )
+        if (
+            action_sensitive_interpolation_lambda is None
+        ) != (action_sensitive_layers is None):
             raise ValueError(
-                "Token masks, head masks, and feature projection are mutually exclusive."
+                "Action-sensitive inference requires both interpolation lambda and layers."
+            )
+        action_sensitive_layers_tuple = normalize_video_layer_indices(
+            action_sensitive_layers,
+            argument_name="action_sensitive_layers",
+            num_layers=self.mot.num_layers,
+        )
+        if sum(
+            (
+                token_hybrid_enabled,
+                head_hybrid_enabled,
+                feature_projection_enabled,
+                action_sensitive_enabled,
+            )
+        ) > 1:
+            raise ValueError(
+                "Token masks, head masks, feature projection, and action-sensitive "
+                "injection are mutually exclusive."
             )
         if (
             token_hybrid_enabled or head_hybrid_enabled or feature_projection_enabled
@@ -1082,6 +1110,7 @@ class FastWAM(torch.nn.Module):
             token_hybrid_enabled
             or head_hybrid_enabled
             or feature_projection_enabled
+            or action_sensitive_enabled
             or return_video_cache_deltas
         ):
             raise ValueError(
@@ -1106,6 +1135,38 @@ class FastWAM(torch.nn.Module):
             raise ValueError("Cache-delta layers must be replacement-enabled layers.")
         if cache_only and compile_action_infer:
             raise ValueError("Cache-only calibration must disable compiled inference.")
+        if action_sensitive_enabled:
+            interpolation_lambda = float(action_sensitive_interpolation_lambda)
+            if not math.isfinite(interpolation_lambda) or not 0.0 <= interpolation_lambda <= 1.0:
+                raise ValueError(
+                    "Action-sensitive interpolation lambda must be finite and in [0,1]."
+                )
+            if not replacement_enabled:
+                raise ValueError(
+                    "Action-sensitive inference requires current/donor cache construction."
+                )
+            if action_sensitive_layers_tuple != replacement_video_layers_tuple:
+                raise ValueError(
+                    "Action-sensitive layers must exactly equal replacement video layers."
+                )
+            if compile_action_infer:
+                raise ValueError("Action-sensitive inference requires uncompiled execution.")
+            if cache_only:
+                raise ValueError("Action-sensitive inference cannot use cache-only mode.")
+            trainable = [
+                name
+                for name, parameter in self.named_parameters()
+                if parameter.requires_grad
+            ]
+            if trainable:
+                raise RuntimeError(
+                    "Action-sensitive inference requires every model parameter to be frozen; "
+                    f"trainable examples={trainable[:8]}."
+                )
+        elif action_sensitive_gradient_checkpointing:
+            raise ValueError(
+                "Action-sensitive gradient checkpointing requires action-sensitive inference."
+            )
         if replacement_enabled != (replacement_input_image is not None):
             raise ValueError(
                 "`replacement_input_image` and a non-empty `replacement_video_layers` "
@@ -1403,6 +1464,7 @@ class FastWAM(torch.nn.Module):
         replacement_video_seq_len = None
         replacement_tokens_per_frame = None
         hybrid_video_cache_audit = None
+        action_sensitive_cache_tensors: dict[str, dict[int, torch.Tensor]] | None = None
         if replacement_video_prepared is not None:
             replacement_video_tokens = replacement_video_prepared[0]
             replacement_video_seq_len = int(replacement_video_tokens.shape[1])
@@ -1429,7 +1491,56 @@ class FastWAM(torch.nn.Module):
                 replacement_video_cache_v = [
                     cache.clone() for cache in replacement_video_cache_v
                 ]
-            if feature_projection_enabled:
+            if action_sensitive_enabled:
+                visible_index = torch.tensor(
+                    action_visible_indices,
+                    device=current_video_cache_k[action_sensitive_layers_tuple[0]].device,
+                    dtype=torch.long,
+                )
+                action_sensitive_cache_tensors = {"k": {}, "v": {}}
+                selected_k = list(current_video_cache_k)
+                selected_v = list(current_video_cache_v)
+                with torch.enable_grad():
+                    for kind, current, wrong, destination in (
+                        (
+                            "k",
+                            current_video_cache_k,
+                            replacement_video_cache_k,
+                            selected_k,
+                        ),
+                        (
+                            "v",
+                            current_video_cache_v,
+                            replacement_video_cache_v,
+                            selected_v,
+                        ),
+                    ):
+                        for layer in action_sensitive_layers_tuple:
+                            current_rows = current[layer].index_select(1, visible_index)
+                            wrong_rows = wrong[layer].index_select(1, visible_index)
+                            interpolated = (
+                                wrong_rows
+                                + float(action_sensitive_interpolation_lambda)
+                                * (current_rows - wrong_rows)
+                            ).detach().clone().requires_grad_(True)
+                            destination[layer] = torch.index_copy(
+                                current[layer].detach(), 1, visible_index, interpolated
+                            )
+                            action_sensitive_cache_tensors[kind][layer] = interpolated
+                video_cache_k, video_cache_v = selected_k, selected_v
+                hybrid_video_cache_audit = {
+                    "schema_version": 1,
+                    "mode": "action_sensitive_interpolation",
+                    "replacement_video_layers": list(action_sensitive_layers_tuple),
+                    "interpolation_lambda": float(
+                        action_sensitive_interpolation_lambda
+                    ),
+                    "action_visible_token_indices": list(action_visible_indices),
+                    "action_visible_token_count": len(action_visible_indices),
+                    "shape_preserved": True,
+                    "only_injected_cache_tensors_require_grad": True,
+                }
+            elif feature_projection_enabled:
                 assert feature_projection_bases_by_layer is not None
                 assert feature_projection_rank is not None
                 video_cache_k, video_cache_v, hybrid_video_cache_audit = (
@@ -1543,23 +1654,33 @@ class FastWAM(torch.nn.Module):
                     ("v", current_video_cache_v, replacement_video_cache_v),
                 )
             }
+        video_cache_layout = None
+        if cache_only or action_sensitive_enabled:
+            representative = (
+                cache_deltas["k"][delta_layers_tuple[0]]
+                if cache_deltas is not None
+                else action_sensitive_cache_tensors["k"][
+                    action_sensitive_layers_tuple[0]
+                ]
+            )
+            video_cache_layout = {
+                "num_layers": int(self.mot.num_layers),
+                "video_seq_len": video_seq_len,
+                "action_visible_token_indices": list(action_visible_indices),
+                "action_visible_token_count": len(action_visible_indices),
+                "feature_dim": int(representative.shape[-1]),
+                "num_heads": int(self.mot.num_heads),
+                "head_dim": int(self.mot.attn_head_dim),
+                "tokens_per_frame": int(tokens_per_frame),
+                "video_grid_size": [int(_f_video), int(_h_video), int(_w_video)],
+                "input_image_shape": list(input_image.shape),
+                "delta_layers": list(delta_layers_tuple),
+                "action_sensitive_layers": list(action_sensitive_layers_tuple),
+            }
         if cache_only:
-            representative_delta = cache_deltas["k"][delta_layers_tuple[0]]
             return {
                 "video_cache_deltas": cache_deltas,
-                "video_cache_layout": {
-                    "num_layers": int(self.mot.num_layers),
-                    "video_seq_len": video_seq_len,
-                    "action_visible_token_indices": list(action_visible_indices),
-                    "action_visible_token_count": len(action_visible_indices),
-                    "feature_dim": int(representative_delta.shape[-1]),
-                    "num_heads": int(self.mot.num_heads),
-                    "head_dim": int(self.mot.attn_head_dim),
-                    "tokens_per_frame": int(tokens_per_frame),
-                    "video_grid_size": [int(_f_video), int(_h_video), int(_w_video)],
-                    "input_image_shape": list(input_image.shape),
-                    "delta_layers": list(delta_layers_tuple),
-                },
+                "video_cache_layout": video_cache_layout,
             }
 
         if replacement_enabled:
@@ -1571,34 +1692,91 @@ class FastWAM(torch.nn.Module):
             replacement_first_frame_latents = None
             replacement_input_image = None
 
-        infer_timesteps_action, infer_deltas_action = self.infer_action_scheduler.build_inference_schedule(
-            num_inference_steps=num_inference_steps,
-            device=self.device,
-            dtype=latents_action.dtype,
-            shift_override=sigma_shift,
-        )
-        for step_t_action, step_delta_action in zip(infer_timesteps_action, infer_deltas_action):
-            if compile_action_infer:
-                torch.compiler.cudagraph_mark_step_begin()
-            timestep_action = step_t_action.unsqueeze(0).to(dtype=latents_action.dtype, device=self.device)
-
-            pred_action_posi = denoise_action_with_video_cache(
-                latents_action=latents_action,
-                timestep_action=timestep_action,
-                context=context,
-                context_mask=context_mask,
-                video_cache_k=video_cache_k,
-                video_cache_v=video_cache_v,
-                action_attention_mask=action_attention_mask,
-                disabled_video_layers=disabled_video_layers_tuple,
+        with torch.set_grad_enabled(action_sensitive_enabled):
+            infer_timesteps_action, infer_deltas_action = (
+                self.infer_action_scheduler.build_inference_schedule(
+                    num_inference_steps=num_inference_steps,
+                    device=self.device,
+                    dtype=latents_action.dtype,
+                    shift_override=sigma_shift,
+                )
             )
-            pred_action = pred_action_posi
+            for step_t_action, step_delta_action in zip(
+                infer_timesteps_action, infer_deltas_action
+            ):
+                if compile_action_infer:
+                    torch.compiler.cudagraph_mark_step_begin()
+                timestep_action = step_t_action.unsqueeze(0).to(
+                    dtype=latents_action.dtype, device=self.device
+                )
 
-            latents_action = self.infer_action_scheduler.step(pred_action, step_delta_action, latents_action)
+                if action_sensitive_enabled and action_sensitive_gradient_checkpointing:
+                    flat_cache = tuple(video_cache_k) + tuple(video_cache_v)
+                    cache_count = len(video_cache_k)
+
+                    def checkpointed_denoise(
+                        action_latents: torch.Tensor,
+                        *cache_tensors: torch.Tensor,
+                        _timestep: torch.Tensor = timestep_action,
+                    ) -> torch.Tensor:
+                        return denoise_action_with_video_cache(
+                            latents_action=action_latents,
+                            timestep_action=_timestep,
+                            context=context,
+                            context_mask=context_mask,
+                            video_cache_k=list(cache_tensors[:cache_count]),
+                            video_cache_v=list(cache_tensors[cache_count:]),
+                            action_attention_mask=action_attention_mask,
+                            disabled_video_layers=disabled_video_layers_tuple,
+                        )
+
+                    pred_action_posi = activation_checkpoint(
+                        checkpointed_denoise,
+                        latents_action,
+                        *flat_cache,
+                        use_reentrant=False,
+                        preserve_rng_state=False,
+                    )
+                else:
+                    pred_action_posi = denoise_action_with_video_cache(
+                        latents_action=latents_action,
+                        timestep_action=timestep_action,
+                        context=context,
+                        context_mask=context_mask,
+                        video_cache_k=video_cache_k,
+                        video_cache_v=video_cache_v,
+                        action_attention_mask=action_attention_mask,
+                        disabled_video_layers=disabled_video_layers_tuple,
+                    )
+                latents_action = self.infer_action_scheduler.step(
+                    pred_action_posi, step_delta_action, latents_action
+                )
+            action_sensitive_output = (
+                latents_action[0].to(dtype=torch.float32)
+                if action_sensitive_enabled
+                else None
+            )
 
         output = {
-            "action": latents_action[0].detach().to(device="cpu", dtype=torch.float32),
+            "action": (
+                action_sensitive_output
+                if action_sensitive_enabled
+                else latents_action[0].detach().to(device="cpu", dtype=torch.float32)
+            ),
         }
+        if action_sensitive_enabled:
+            assert action_sensitive_cache_tensors is not None
+            output["action_sensitive_cache_tensors"] = action_sensitive_cache_tensors
+            output["video_cache_layout"] = video_cache_layout
+            output["action_sensitive_inference"] = {
+                "interpolation_lambda": float(action_sensitive_interpolation_lambda),
+                "layers": list(action_sensitive_layers_tuple),
+                "num_inference_steps": int(num_inference_steps),
+                "gradient_checkpointing": bool(action_sensitive_gradient_checkpointing),
+                "raw_action_shape": list(latents_action[0].shape),
+                "raw_action_normalized": True,
+                "model_parameters_frozen": True,
+            }
         if video_cache_stats is not None:
             output["video_cache_stats"] = video_cache_stats
         if cache_deltas is not None:

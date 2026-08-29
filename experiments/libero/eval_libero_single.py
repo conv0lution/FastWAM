@@ -48,6 +48,7 @@ from experiments.asre_diagnosis.common import (
     ROUND4A_PROTOCOL,
     ROUND4B_PROTOCOL,
     ROUND4C_PROTOCOL,
+    SALVAGE_A_PROTOCOL,
     atomic_write_json,
     build_run_metadata,
     git_commit,
@@ -68,6 +69,12 @@ from experiments.asre_diagnosis.round4b.basis import (
     load_runtime_basis,
     validate_basis_manifest,
 )
+from experiments.asre_diagnosis.salvage_a.basis import (
+    RuntimeBasisSpec as SalvageARuntimeBasisSpec,
+    load_runtime_basis as load_salvage_a_runtime_basis,
+    validate_basis_manifest as validate_salvage_a_basis_manifest,
+)
+from experiments.asre_diagnosis.salvage_a.donor import SalvageADonorBundle
 from fastwam.datasets.lerobot.processors.fastwam_processor import FastWAMProcessor
 from fastwam.datasets.lerobot.utils.normalizer import load_dataset_stats_from_json
 from fastwam.utils.pytorch_utils import set_global_seed
@@ -80,6 +87,44 @@ OmegaConf.register_new_resolver("max", lambda x: max(x))
 OmegaConf.register_new_resolver("split", lambda s, idx: s.split("/")[int(idx)])
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+
+_SALVAGE_A_PROVENANCE_STEMS = (
+    "preflight_report",
+    "machinery_report",
+    "differentiable_path_report",
+    "calibration_split_manifest",
+    "state_selection_manifest",
+    "subspace_basis_manifest",
+    "subspace_diagnostics",
+    "round4c_summary",
+)
+_SALVAGE_A_PROVENANCE_KEYS = tuple(
+    key
+    for stem in _SALVAGE_A_PROVENANCE_STEMS
+    for key in (f"{stem}_path", f"{stem}_sha256")
+)
+
+
+def _salvage_a_result_metadata(diagnosis_cfg: Any) -> dict[str, Any]:
+    """Return the immutable Salvage-A fields copied into each task result."""
+
+    keys = (
+        "subspace_basis_kind",
+        "subspace_rank",
+        *_SALVAGE_A_PROVENANCE_KEYS,
+    )
+    return {key: diagnosis_cfg.get(key) for key in keys}
+
+
+def _salvage_a_resume_keys() -> tuple[str, ...]:
+    """Fields that make a Salvage-A output directory safe to resume."""
+
+    return (
+        "subspace_basis_kind",
+        "subspace_rank",
+        *_SALVAGE_A_PROVENANCE_KEYS,
+    )
 
 
 class NumpyEncoder(json.JSONEncoder):
@@ -134,7 +179,7 @@ def _load_donor_bundle(
     cfg: DictConfig,
     *,
     task_ids: list[int],
-) -> Optional[OnlineDonorBundle]:
+) -> Optional[OnlineDonorBundle | SalvageADonorBundle]:
     """Load and verify the frozen donor bundle for a replacement protocol."""
 
     diagnosis_cfg = cfg.get("ASRE_DIAGNOSIS", {})
@@ -160,6 +205,7 @@ def _load_donor_bundle(
         ROUND4A_PROTOCOL,
         ROUND4B_PROTOCOL,
         ROUND4C_PROTOCOL,
+        SALVAGE_A_PROTOCOL,
     }:
         if configured:
             raise ValueError(
@@ -173,12 +219,18 @@ def _load_donor_bundle(
             "Every replacement-capable condition must record and validate the same frozen donor "
             f"bundle; missing ASRE_DIAGNOSIS fields: {missing}."
         )
+    artifact_protocol_label = (
+        "ASRE Salvage A" if protocol == SALVAGE_A_PROTOCOL else "ASRE Round 3B"
+    )
     mapping_path = _resolve_required_artifact_path(
-        configured["donor_mapping_path"], label="donor_mapping_path"
+        configured["donor_mapping_path"],
+        label="donor_mapping_path",
+        protocol_label=artifact_protocol_label,
     )
     manifest_path = _resolve_required_artifact_path(
         configured["donor_observation_manifest_path"],
         label="donor_observation_manifest_path",
+        protocol_label=artifact_protocol_label,
     )
     observation_root = Path(
         os.path.expanduser(os.path.expandvars(str(configured["donor_observation_root"])))
@@ -195,7 +247,10 @@ def _load_donor_bundle(
     ):
         if len(digest) != 64:
             raise ValueError(f"ASRE donor {label} must be a SHA256 digest, got {digest!r}.")
-    bundle = OnlineDonorBundle.load(
+    bundle_class = (
+        SalvageADonorBundle if protocol == SALVAGE_A_PROTOCOL else OnlineDonorBundle
+    )
+    bundle = bundle_class.load(
         mapping_path=mapping_path,
         observation_manifest_path=manifest_path,
         observation_root=observation_root,
@@ -279,19 +334,33 @@ def _load_round3b_donor_bundle(
 
 def _load_round4b_basis_spec(
     cfg: DictConfig, model: torch.nn.Module
-) -> Optional[RuntimeBasisSpec]:
+) -> Optional[RuntimeBasisSpec | SalvageARuntimeBasisSpec]:
     diagnosis_cfg = cfg.get("ASRE_DIAGNOSIS", {})
     protocol = str(diagnosis_cfg.get("protocol", ""))
-    if protocol not in {ROUND4B_PROTOCOL, ROUND4C_PROTOCOL}:
+    if protocol not in {ROUND4B_PROTOCOL, ROUND4C_PROTOCOL, SALVAGE_A_PROTOCOL}:
         return None
-    protocol_label = "ASRE Round 4C" if protocol == ROUND4C_PROTOCOL else "ASRE Round 4B"
+    protocol_label = {
+        ROUND4B_PROTOCOL: "ASRE Round 4B",
+        ROUND4C_PROTOCOL: "ASRE Round 4C",
+        SALVAGE_A_PROTOCOL: "ASRE Salvage A",
+    }[protocol]
     path = _resolve_required_artifact_path(
         diagnosis_cfg.get("subspace_basis_manifest_path"),
         label="subspace_basis_manifest_path",
         protocol_label=protocol_label,
     )
     digest = str(diagnosis_cfg.get("subspace_basis_manifest_sha256", ""))
-    validate_basis_manifest(path, expected_sha256=digest, verify_files=False)
+    basis_validator = (
+        validate_salvage_a_basis_manifest
+        if protocol == SALVAGE_A_PROTOCOL
+        else validate_basis_manifest
+    )
+    basis_loader = (
+        load_salvage_a_runtime_basis
+        if protocol == SALVAGE_A_PROTOCOL
+        else load_runtime_basis
+    )
+    basis_validator(path, expected_sha256=digest, verify_files=False)
     kind = diagnosis_cfg.get("subspace_basis_kind")
     rank = diagnosis_cfg.get("subspace_rank")
     if kind in {None, "", "none", "null"}:
@@ -301,7 +370,7 @@ def _load_round4b_basis_spec(
     if rank is None:
         raise ValueError(f"{protocol_label} projected condition requires subspace_rank.")
     parameter = next(model.parameters())
-    return load_runtime_basis(
+    return basis_loader(
         manifest_path=path,
         expected_sha256=digest,
         basis_kind=str(kind),
@@ -629,6 +698,45 @@ def _resolve_round4c_run_provenance(cfg: DictConfig) -> dict[str, Any]:
         != payload["subspace_basis_manifest_sha256"]
     ):
         raise ValueError("Round-4C cumulative-energy provenance is incompatible.")
+    for key, value in payload.items():
+        cfg.ASRE_DIAGNOSIS[key] = value
+    return payload
+
+
+def _resolve_salvage_a_run_provenance(cfg: DictConfig) -> dict[str, Any]:
+    """Validate and normalize every frozen artifact used by Salvage A."""
+
+    diagnosis_cfg = cfg.get("ASRE_DIAGNOSIS", {})
+    if str(diagnosis_cfg.get("protocol", "")) != SALVAGE_A_PROTOCOL:
+        return {}
+    missing = [
+        key
+        for key in _SALVAGE_A_PROVENANCE_KEYS
+        if diagnosis_cfg.get(key) is None or str(diagnosis_cfg.get(key)).strip() == ""
+    ]
+    if missing:
+        raise ValueError(f"Salvage-A run provenance is incomplete: {missing}.")
+
+    payload: dict[str, Any] = {}
+    for stem in _SALVAGE_A_PROVENANCE_STEMS:
+        path_key = f"{stem}_path"
+        digest_key = f"{stem}_sha256"
+        path = _resolve_required_artifact_path(
+            diagnosis_cfg.get(path_key),
+            label=path_key,
+            protocol_label="ASRE Salvage A",
+        )
+        digest = sha256_file(path)
+        if digest != str(diagnosis_cfg.get(digest_key)):
+            raise ValueError(f"Salvage-A artifact SHA256 mismatch: {path}")
+        payload[path_key] = str(path)
+        payload[digest_key] = digest
+
+    validate_salvage_a_basis_manifest(
+        Path(payload["subspace_basis_manifest_path"]),
+        expected_sha256=payload["subspace_basis_manifest_sha256"],
+        verify_files=False,
+    )
     for key, value in payload.items():
         cfg.ASRE_DIAGNOSIS[key] = value
     return payload
@@ -1067,7 +1175,7 @@ def _run_prepared_action_inference(
                 if parameter_name not in infer_parameters:
                     raise ValueError(
                         f"{type(model).__name__}.{infer_method.__name__} does not "
-                        f"support Round-4B argument {parameter_name!r}."
+                        f"support subspace-projection argument {parameter_name!r}."
                     )
                 call_kwargs[parameter_name] = parameter_value
         replacement_layers = tuple(
@@ -1749,6 +1857,8 @@ def _run_task_to_file(
                     )
                 }
             )
+        if str(diagnosis_cfg.get("protocol", "")) == SALVAGE_A_PROTOCOL:
+            results.update(_salvage_a_result_metadata(diagnosis_cfg))
     if worker_id is not None:
         results["worker_id"] = worker_id
     results.update(
@@ -2057,6 +2167,7 @@ def eval_single_process(cfg: DictConfig):
         **_resolve_round4a_run_provenance(cfg),
         **_resolve_round4b_run_provenance(cfg),
         **_resolve_round4c_run_provenance(cfg),
+        **_resolve_salvage_a_run_provenance(cfg),
     }
 
     diagnosis_enabled = bool(diagnosis_cfg.get("enabled", False))
@@ -2204,6 +2315,8 @@ def eval_single_process(cfg: DictConfig):
                 }
             )
         run_metadata.update(run_provenance)
+        if str(cfg.ASRE_DIAGNOSIS.get("protocol")) == SALVAGE_A_PROTOCOL:
+            run_metadata.update(_salvage_a_result_metadata(diagnosis_cfg))
         if metadata_path.exists():
             with metadata_path.open("r", encoding="utf-8") as handle:
                 existing_metadata = json.load(handle)
@@ -2233,6 +2346,7 @@ def eval_single_process(cfg: DictConfig):
                 ROUND4A_PROTOCOL,
                 ROUND4B_PROTOCOL,
                 ROUND4C_PROTOCOL,
+                SALVAGE_A_PROTOCOL,
             }:
                 resume_keys.extend(
                     [
@@ -2257,6 +2371,7 @@ def eval_single_process(cfg: DictConfig):
                 ROUND4A_PROTOCOL,
                 ROUND4B_PROTOCOL,
                 ROUND4C_PROTOCOL,
+                SALVAGE_A_PROTOCOL,
             }:
                 resume_keys.extend(
                     [
@@ -2362,6 +2477,8 @@ def eval_single_process(cfg: DictConfig):
                         "cumulative_energy_analysis_commit",
                     ]
                 )
+            if str(cfg.ASRE_DIAGNOSIS.get("protocol")) == SALVAGE_A_PROTOCOL:
+                resume_keys.extend(_salvage_a_resume_keys())
             mismatches = {
                 key: {"existing": existing_metadata.get(key), "requested": run_metadata.get(key)}
                 for key in resume_keys
