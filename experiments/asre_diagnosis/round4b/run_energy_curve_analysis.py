@@ -146,6 +146,29 @@ def _preflight(round4b_root: Path, output: Path) -> dict[str, Any]:
     }
 
 
+def _reuse_stable_preflight(
+    existing: dict[str, Any], expected: dict[str, Any]
+) -> dict[str, Any]:
+    """Accept a resume when only the intentionally dynamic timestamp differs."""
+
+    recorded_timestamp = existing.get("created_at")
+    if not isinstance(recorded_timestamp, str) or not recorded_timestamp:
+        raise RuntimeError("Existing cumulative-energy preflight lacks created_at.")
+    comparable = dict(expected)
+    comparable["created_at"] = recorded_timestamp
+    if existing != comparable:
+        mismatches = {
+            key: {"existing": existing.get(key), "expected": comparable.get(key)}
+            for key in sorted(set(existing) | set(comparable))
+            if existing.get(key) != comparable.get(key)
+        }
+        raise RuntimeError(
+            "Refusing incompatible cumulative-energy resume: "
+            + json.dumps(mismatches, sort_keys=True)
+        )
+    return existing
+
+
 def run(args: argparse.Namespace) -> Path:
     round4b_root = args.round4b_root.resolve()
     output = args.output_root.resolve()
@@ -156,9 +179,9 @@ def run(args: argparse.Namespace) -> Path:
     logs = output / "logs"
     preflight = _preflight(round4b_root, output)
     preflight_path = output / "preflight_report.json"
-    if preflight_path.exists() and _read(preflight_path) != preflight:
-        raise RuntimeError("Refusing incompatible cumulative-energy resume.")
-    if not preflight_path.exists():
+    if preflight_path.exists():
+        preflight = _reuse_stable_preflight(_read(preflight_path), preflight)
+    else:
         atomic_write_json(preflight_path, preflight)
 
     python = str(args.python.resolve())

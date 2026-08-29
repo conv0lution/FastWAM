@@ -11,6 +11,9 @@ from experiments.asre_diagnosis.round4b.energy_curve_analysis import (
     minimum_rank,
     validate_curve,
 )
+from experiments.asre_diagnosis.round4b.run_energy_curve_analysis import (
+    _reuse_stable_preflight,
+)
 
 
 def test_cumulative_curve_covers_rank_zero_through_feature_dim() -> None:
@@ -72,3 +75,17 @@ def test_curve_checks_fail_closed_on_nonmonotonic_or_incomplete_data() -> None:
         validate_curve(broken, label="broken", rank_d_tolerance=1e-6)
     with pytest.raises(ValueError, match="length 3072"):
         cumulative_curve(np.ones(10), 10.0)
+
+
+def test_resume_preflight_ignores_only_the_dynamic_creation_timestamp() -> None:
+    existing = {
+        "artifact_type": "preflight",
+        "created_at": "2026-08-29T01:00:00+08:00",
+        "analysis_commit": "abc",
+        "split_sha256": "1" * 64,
+    }
+    regenerated = dict(existing, created_at="2026-08-29T02:00:00+08:00")
+    assert _reuse_stable_preflight(existing, regenerated) == existing
+    changed = dict(regenerated, split_sha256="2" * 64)
+    with pytest.raises(RuntimeError, match="split_sha256"):
+        _reuse_stable_preflight(existing, changed)
