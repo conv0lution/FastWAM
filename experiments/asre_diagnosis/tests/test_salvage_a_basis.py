@@ -8,7 +8,10 @@ import torch
 
 from experiments.asre_diagnosis.common import SALVAGE_A_PROTOCOL, sha256_file
 from experiments.asre_diagnosis.salvage_a import basis as basis_module
-from experiments.asre_diagnosis.salvage_a.basis import BASIS_KINDS
+from experiments.asre_diagnosis.salvage_a.basis import (
+    BASIS_KINDS,
+    projection_audit_passed,
+)
 from experiments.asre_diagnosis.salvage_a.finalize_bases import (
     _principal_angle_summary,
     _subspace_overlap,
@@ -58,6 +61,21 @@ def _small_manifest(tmp_path: Path) -> tuple[Path, dict]:
     path = tmp_path / "basis_manifest.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
     return path, payload
+
+
+def test_machinery_accepts_runtime_feature_subspace_audit_schema() -> None:
+    audit = {
+        "mode": "feature_subspace",
+        "projection_rank": 36,
+        "replacement_video_layers": list(range(15, 30)),
+        "action_visible_token_count": 98,
+        "shape_preserved": True,
+        "tokens_modified": False,
+        "heads_modified": False,
+        "k_v_bases_independent": True,
+    }
+    assert projection_audit_passed(audit, 36)
+    assert not projection_audit_passed(dict(audit, mode="feature_projection"), 36)
 
 
 def test_salvage_a_three_family_runtime_loader_uses_nested_prefixes(

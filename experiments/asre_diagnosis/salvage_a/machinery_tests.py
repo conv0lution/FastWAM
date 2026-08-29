@@ -30,6 +30,7 @@ from experiments.asre_diagnosis.salvage_a.basis import (  # noqa: E402
     RANKS,
     TENSOR_KINDS,
     load_runtime_basis,
+    projection_audit_passed,
     validate_basis_manifest,
 )
 from experiments.asre_diagnosis.salvage_a.donor import (  # noqa: E402
@@ -41,6 +42,9 @@ from experiments.asre_diagnosis.salvage_a.fit_worker import (  # noqa: E402
     _load_model,
     _load_sample,
     _read,
+)
+from experiments.asre_diagnosis.salvage_a.reviewed_resume import (  # noqa: E402
+    validate_reviewed_artifact_source,
 )
 from fastwam.utils.pytorch_utils import set_global_seed  # noqa: E402
 
@@ -160,9 +164,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     ):
         raise ValueError("Preflight or differentiable-path gate did not pass.")
     current_commit = git_commit(PROJECT_ROOT)
+    artifact_source_commit = str(preflight.get("git", {}).get("current_head", ""))
+    reviewed_resume_bridge = validate_reviewed_artifact_source(
+        source_commit=artifact_source_commit,
+        current_commit=current_commit,
+        project_root=PROJECT_ROOT,
+    )
     if (
-        preflight.get("git", {}).get("current_head") != current_commit
-        or differentiable.get("git_commit_hash") != current_commit
+        differentiable.get("git_commit_hash") != artifact_source_commit
     ):
         raise ValueError("Machinery inputs were produced by a different source commit.")
 
@@ -180,8 +189,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         != differentiable_sha
         or manifest.get("subspace_diagnostics_sha256")
         != sha256_file(diagnostics_path)
-        or manifest.get("git_commit_hash") != current_commit
-        or diagnostics.get("git_commit_hash") != current_commit
+        or manifest.get("git_commit_hash") != artifact_source_commit
+        or diagnostics.get("git_commit_hash") != artifact_source_commit
     ):
         raise ValueError("Basis/diagnostics provenance is incompatible.")
     geometry = _validate_offline_geometry(manifest, diagnostics)
@@ -329,16 +338,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     audits_passed = True
     for (family, rank), output in projected.items():
         audit = output["video_cache_stats"]["hybrid_video_cache"]
-        passed = bool(
-            audit.get("mode") == "feature_projection"
-            and audit.get("projection_rank") == rank
-            and audit.get("replacement_video_layers") == list(LATE_LAYERS)
-            and audit.get("action_visible_token_count") == 98
-            and audit.get("shape_preserved") is True
-            and audit.get("tokens_modified") is False
-            and audit.get("heads_modified") is False
-            and audit.get("k_v_bases_independent") is True
-        )
+        passed = projection_audit_passed(audit, rank)
         audits_passed = audits_passed and passed
         projection_audits.append(
             {"basis_family": family, "rank": rank, "passed": passed, "audit": audit}
@@ -368,6 +368,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "status": "passed" if passed else "failed",
         "created_at": now_iso(),
         "git_commit_hash": current_commit,
+        "artifact_source_git_commit_hash": artifact_source_commit,
+        "reviewed_resume_bridge_applied": reviewed_resume_bridge,
         "sample_id": sample_id,
         "rank0_equals_wrong": rank0_comparison,
         "rankd_equals_current": rankd_comparison,

@@ -27,6 +27,9 @@ from experiments.asre_diagnosis.salvage_a.definitions import (  # noqa: E402
     CONDITIONS,
     WAVES,
 )
+from experiments.asre_diagnosis.salvage_a.reviewed_resume import (  # noqa: E402
+    validate_reviewed_artifact_source,
+)
 
 
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "asre_results/salvage_a_action_sensitive"
@@ -50,7 +53,13 @@ def _recorded_commit(payload: Mapping[str, Any]) -> str | None:
     value = payload.get("git_commit_hash")
     if value is None and isinstance(payload.get("git"), Mapping):
         value = payload["git"].get("current_head")
+    if value is None and isinstance(payload.get("identity"), Mapping):
+        value = payload["identity"].get("git_commit_hash")
     return None if value is None else str(value)
+
+
+def _failed_stable_output(payload: Mapping[str, Any]) -> bool:
+    return payload.get("passed") is False or payload.get("status") == "failed"
 
 
 def _assert_clean_worktree(output: Path) -> None:
@@ -88,15 +97,18 @@ def _run(
 ) -> None:
     if stable_output is not None and stable_output.is_file():
         payload = _read(stable_output)
-        recorded = _recorded_commit(payload)
-        current = git_commit(PROJECT_ROOT)
-        if recorded is not None and recorded != current:
-            raise RuntimeError(
-                f"Refusing to reuse {name} from source commit {recorded}; "
-                f"current HEAD is {current}. Use a new output root."
-            )
-        print(f"[SalvageA] Reusing {name}: {stable_output}", flush=True)
-        return
+        if not _failed_stable_output(payload):
+            recorded = _recorded_commit(payload)
+            current = git_commit(PROJECT_ROOT)
+            if recorded is not None:
+                validate_reviewed_artifact_source(
+                    source_commit=recorded,
+                    current_commit=current,
+                    project_root=PROJECT_ROOT,
+                )
+            print(f"[SalvageA] Reusing {name}: {stable_output}", flush=True)
+            return
+        print(f"[SalvageA] Re-running failed {name}: {stable_output}", flush=True)
     logs.mkdir(parents=True, exist_ok=True)
     attempt = 1
     path = logs / f"{name}.log"
@@ -244,8 +256,12 @@ def run(args: argparse.Namespace) -> None:
         {"protocol": SALVAGE_A_PROTOCOL, "status": "compatible"},
         label="preflight report",
     )
-    if preflight_payload.get("git", {}).get("current_head") != git_commit(PROJECT_ROOT):
-        raise RuntimeError("Refusing a preflight report from another source commit.")
+    artifact_source_commit = str(preflight_payload.get("git", {}).get("current_head", ""))
+    reviewed_resume_bridge = validate_reviewed_artifact_source(
+        source_commit=artifact_source_commit,
+        current_commit=git_commit(PROJECT_ROOT),
+        project_root=PROJECT_ROOT,
+    )
     state = preflight_payload["state_bank"]
 
     _run(
@@ -265,6 +281,7 @@ def run(args: argparse.Namespace) -> None:
             str(split),
         ],
         logs,
+        stable_output=split,
     )
     _run(
         "prepare_split_local_donors",
@@ -282,6 +299,7 @@ def run(args: argparse.Namespace) -> None:
             str(donor_mapping),
         ],
         logs,
+        stable_output=donor_mapping,
     )
     _run(
         "prepare_state_selection",
@@ -295,6 +313,7 @@ def run(args: argparse.Namespace) -> None:
             str(state_selection),
         ],
         logs,
+        stable_output=state_selection,
     )
     _run(
         "differentiable_path_check",
@@ -329,7 +348,7 @@ def run(args: argparse.Namespace) -> None:
         {
             "protocol": SALVAGE_A_PROTOCOL,
             "passed": True,
-            "git_commit_hash": git_commit(PROJECT_ROOT),
+            "git_commit_hash": artifact_source_commit,
             "preflight_sha256": sha256_file(preflight),
             "split_sha256": sha256_file(split),
             "state_selection_sha256": sha256_file(state_selection),
@@ -375,6 +394,7 @@ def run(args: argparse.Namespace) -> None:
             *fit_common,
         ],
         logs,
+        stable_output=fit_dir / "fit_launcher_summary.json",
     )
     _run(
         "heldout_diagnostics_shards",
@@ -389,6 +409,7 @@ def run(args: argparse.Namespace) -> None:
             *fit_common,
         ],
         logs,
+        stable_output=heldout_dir / "heldout_launcher_summary.json",
     )
     _run(
         "finalize_bases_and_diagnostics",
@@ -421,7 +442,7 @@ def run(args: argparse.Namespace) -> None:
         basis_payload,
         {
             "protocol": SALVAGE_A_PROTOCOL,
-            "git_commit_hash": git_commit(PROJECT_ROOT),
+            "git_commit_hash": artifact_source_commit,
             "split_sha256": sha256_file(split),
             "state_selection_sha256": sha256_file(state_selection),
             "differentiable_path_gate_passed": True,
@@ -437,7 +458,7 @@ def run(args: argparse.Namespace) -> None:
         diagnostics_payload,
         {
             "protocol": SALVAGE_A_PROTOCOL,
-            "git_commit_hash": git_commit(PROJECT_ROOT),
+            "git_commit_hash": artifact_source_commit,
             "heldout_used_for_fitting": False,
             "split_sha256": sha256_file(split),
             "state_selection_sha256": sha256_file(state_selection),
@@ -486,6 +507,8 @@ def run(args: argparse.Namespace) -> None:
             "protocol": SALVAGE_A_PROTOCOL,
             "passed": True,
             "git_commit_hash": git_commit(PROJECT_ROOT),
+            "artifact_source_git_commit_hash": artifact_source_commit,
+            "reviewed_resume_bridge_applied": reviewed_resume_bridge,
             "preflight_report_sha256": sha256_file(preflight),
             "differentiable_path_report_sha256": sha256_file(differentiable),
             "split_manifest_sha256": sha256_file(split),

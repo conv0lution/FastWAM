@@ -25,6 +25,21 @@ BASIS_KINDS = ("svd", "actionaware", "random")
 TENSOR_KINDS = ("k", "v")
 
 
+def projection_audit_passed(audit: Mapping[str, Any], rank: int) -> bool:
+    """Validate the runtime feature-subspace injection audit schema."""
+
+    return bool(
+        audit.get("mode") == "feature_subspace"
+        and audit.get("projection_rank") == rank
+        and audit.get("replacement_video_layers") == list(LATE_LAYERS)
+        and audit.get("action_visible_token_count") == 98
+        and audit.get("shape_preserved") is True
+        and audit.get("tokens_modified") is False
+        and audit.get("heads_modified") is False
+        and audit.get("k_v_bases_independent") is True
+    )
+
+
 def _read_json(path: Path) -> dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):

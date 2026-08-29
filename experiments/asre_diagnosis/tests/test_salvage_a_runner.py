@@ -19,6 +19,10 @@ from experiments.asre_diagnosis.salvage_a.launch_wave import (
     _split_trials,
     _validate_assignments,
 )
+from experiments.asre_diagnosis.salvage_a.run_salvage_a import (
+    _failed_stable_output,
+    _recorded_commit,
+)
 
 
 def _cfg(index: int) -> dict:
@@ -35,6 +39,12 @@ def _cfg(index: int) -> dict:
         "subspace_basis_kind": condition.basis_kind,
         "subspace_rank": condition.subspace_rank,
     }
+
+
+def test_resume_reads_nested_launcher_commit_and_reruns_failed_gate() -> None:
+    assert _recorded_commit({"identity": {"git_commit_hash": "abc"}}) == "abc"
+    assert _failed_stable_output({"status": "failed", "passed": False})
+    assert not _failed_stable_output({"status": "complete", "all_succeeded": True})
 
 
 def _rates(**updates: float) -> dict[str, float]:
