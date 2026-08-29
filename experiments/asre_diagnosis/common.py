@@ -20,6 +20,7 @@ ROUND3B_PROTOCOL = "round3b_matched_kv_replacement"
 G0_PROTOCOL = "g0_cross_suite_generalization"
 ROUND4A_PROTOCOL = "round4a_matched_content_axis_screen"
 ROUND4B_PROTOCOL = "round4b_low_rank_feature_subspace"
+ROUND4C_PROTOCOL = "round4c_energy_controlled_action_sufficiency"
 
 
 @dataclass(frozen=True)
@@ -233,6 +234,24 @@ def build_round4b_conditions(num_layers: int) -> list[Round4BCondition]:
     ]
 
 
+def build_round4c_conditions(num_layers: int) -> list[Round4BCondition]:
+    """Build the frozen five-arm Stage-2 Round-4C energy-sufficiency matrix."""
+    if num_layers != 30:
+        raise ValueError(
+            "ASRE Round 4C is pre-registered for exactly 30 action layers; "
+            f"the selected model exposes {num_layers}."
+        )
+    early = tuple(range(15))
+    late = tuple(range(15, 30))
+    return [
+        Round4BCondition("current_all", early),
+        Round4BCondition("wrong_all", early, replacement_video_layers=late),
+        Round4BCondition("svd_r36", early, late, "svd", 36),
+        Round4BCondition("svd_r97", early, late, "svd", 97),
+        Round4BCondition("svd_r170", early, late, "svd", 170),
+    ]
+
+
 def get_num_model_layers(model: torch.nn.Module) -> int:
     mot = getattr(model, "mot", None)
     num_layers = getattr(mot, "num_layers", None)
@@ -372,16 +391,22 @@ def resolve_condition(diagnosis_cfg: Mapping[str, Any], num_layers: int) -> Diag
         G0_PROTOCOL,
         ROUND4A_PROTOCOL,
         ROUND4B_PROTOCOL,
+        ROUND4C_PROTOCOL,
     }:
         raise ValueError(
             f"Unsupported ASRE_DIAGNOSIS.protocol={protocol!r}; expected "
             f"one of {ROUND1_PROTOCOL!r}, {ROUND2_PROTOCOL!r}, or "
             f"{ROUND3A_PROTOCOL!r}, {ROUND3B_PROTOCOL!r}, {G0_PROTOCOL!r}, "
-            f"or {ROUND4A_PROTOCOL!r}, {ROUND4B_PROTOCOL!r}."
+            f"or {ROUND4A_PROTOCOL!r}, {ROUND4B_PROTOCOL!r}, "
+            f"{ROUND4C_PROTOCOL!r}."
         )
 
     replacement_protocols = {
-        ROUND3B_PROTOCOL, G0_PROTOCOL, ROUND4A_PROTOCOL, ROUND4B_PROTOCOL
+        ROUND3B_PROTOCOL,
+        G0_PROTOCOL,
+        ROUND4A_PROTOCOL,
+        ROUND4B_PROTOCOL,
+        ROUND4C_PROTOCOL,
     }
     if protocol in replacement_protocols and mode != "replace_video_kv":
         raise ValueError(
@@ -400,12 +425,14 @@ def resolve_condition(diagnosis_cfg: Mapping[str, Any], num_layers: int) -> Diag
         G0_PROTOCOL,
         ROUND4A_PROTOCOL,
         ROUND4B_PROTOCOL,
+        ROUND4C_PROTOCOL,
     }:
         is_round2 = protocol == ROUND2_PROTOCOL
         is_round3a = protocol == ROUND3A_PROTOCOL
         is_round3b = protocol == ROUND3B_PROTOCOL
         is_round4a = protocol == ROUND4A_PROTOCOL
         is_round4b = protocol == ROUND4B_PROTOCOL
+        is_round4c = protocol == ROUND4C_PROTOCOL
         round_label = (
             "Round-2"
             if is_round2
@@ -417,6 +444,8 @@ def resolve_condition(diagnosis_cfg: Mapping[str, Any], num_layers: int) -> Diag
             if is_round4a
             else "Round-4B"
             if is_round4b
+            else "Round-4C"
+            if is_round4c
             else "G0"
         )
         conditions = (
@@ -430,6 +459,8 @@ def resolve_condition(diagnosis_cfg: Mapping[str, Any], num_layers: int) -> Diag
             if is_round4a
             else build_round4b_conditions(num_layers)
             if is_round4b
+            else build_round4c_conditions(num_layers)
+            if is_round4c
             else build_g0_conditions(num_layers)
         )
         condition_index = diagnosis_cfg.get("condition_index")
@@ -492,7 +523,7 @@ def resolve_condition(diagnosis_cfg: Mapping[str, Any], num_layers: int) -> Diag
                     f"Configured hybrid_mask_seed={configured_seed!r} disagrees with "
                     f"{selected.name}: {selected.mask_seed!r}."
                 )
-        if is_round4b:
+        if is_round4b or is_round4c:
             assert isinstance(selected, Round4BCondition)
             configured_kind = diagnosis_cfg.get("subspace_basis_kind")
             if configured_kind in {"", "none", "null"}:

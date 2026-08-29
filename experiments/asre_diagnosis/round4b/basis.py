@@ -16,6 +16,7 @@ from experiments.asre_diagnosis.common import ROUND4B_PROTOCOL, sha256_file
 LATE_LAYERS = tuple(range(15, 30))
 EXPECTED_FEATURE_DIM = 3072
 RANKS = (256, 768, 1536)
+ROUND4C_SVD_RANKS = (36, 97, 170)
 MAX_RANK = max(RANKS)
 RANDOM_SEED = 4205
 
@@ -132,8 +133,12 @@ def load_runtime_basis(
 ) -> RuntimeBasisSpec:
     if basis_kind not in {"svd", "random"}:
         raise ValueError(f"Unknown Round-4B basis kind: {basis_kind!r}.")
-    if rank not in RANKS:
-        raise ValueError(f"Round-4B rank must be one of {RANKS}, got {rank}.")
+    allowed_ranks = RANKS if basis_kind == "random" else (*ROUND4C_SVD_RANKS, *RANKS)
+    if rank not in allowed_ranks:
+        raise ValueError(
+            f"Frozen {basis_kind.upper()} basis rank must be one of "
+            f"{allowed_ranks}, got {rank}."
+        )
     path = manifest_path.expanduser().resolve()
     key = (str(path), expected_sha256, basis_kind, rank, str(device), str(dtype))
     if key in _RUNTIME_CACHE:

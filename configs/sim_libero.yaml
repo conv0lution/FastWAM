@@ -111,6 +111,14 @@ ASRE_DIAGNOSIS:
   subspace_rank: null
   subspace_diagnostics_path: null
   subspace_diagnostics_sha256: null
+  energy_analysis_manifest_path: null
+  energy_analysis_manifest_sha256: null
+  energy_candidate_ranks_path: null
+  energy_candidate_ranks_sha256: null
+  round4b_summary_path: null
+  round4b_summary_sha256: null
+  round4b_source_commit: null
+  cumulative_energy_analysis_commit: null
 
 MULTIRUN:
   create_only: false

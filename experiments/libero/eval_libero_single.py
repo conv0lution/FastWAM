@@ -47,6 +47,7 @@ from experiments.asre_diagnosis.common import (
     ROUND3B_PROTOCOL,
     ROUND4A_PROTOCOL,
     ROUND4B_PROTOCOL,
+    ROUND4C_PROTOCOL,
     atomic_write_json,
     build_run_metadata,
     git_commit,
@@ -154,7 +155,11 @@ def _load_donor_bundle(
         and str(diagnosis_cfg.get(key)).strip() != ""
     }
     if protocol not in {
-        ROUND3B_PROTOCOL, G0_PROTOCOL, ROUND4A_PROTOCOL, ROUND4B_PROTOCOL
+        ROUND3B_PROTOCOL,
+        G0_PROTOCOL,
+        ROUND4A_PROTOCOL,
+        ROUND4B_PROTOCOL,
+        ROUND4C_PROTOCOL,
     }:
         if configured:
             raise ValueError(
@@ -276,12 +281,14 @@ def _load_round4b_basis_spec(
     cfg: DictConfig, model: torch.nn.Module
 ) -> Optional[RuntimeBasisSpec]:
     diagnosis_cfg = cfg.get("ASRE_DIAGNOSIS", {})
-    if str(diagnosis_cfg.get("protocol", "")) != ROUND4B_PROTOCOL:
+    protocol = str(diagnosis_cfg.get("protocol", ""))
+    if protocol not in {ROUND4B_PROTOCOL, ROUND4C_PROTOCOL}:
         return None
+    protocol_label = "ASRE Round 4C" if protocol == ROUND4C_PROTOCOL else "ASRE Round 4B"
     path = _resolve_required_artifact_path(
         diagnosis_cfg.get("subspace_basis_manifest_path"),
         label="subspace_basis_manifest_path",
-        protocol_label="ASRE Round 4B",
+        protocol_label=protocol_label,
     )
     digest = str(diagnosis_cfg.get("subspace_basis_manifest_sha256", ""))
     validate_basis_manifest(path, expected_sha256=digest, verify_files=False)
@@ -289,10 +296,10 @@ def _load_round4b_basis_spec(
     rank = diagnosis_cfg.get("subspace_rank")
     if kind in {None, "", "none", "null"}:
         if rank is not None:
-            raise ValueError("Round-4B endpoint condition cannot configure a rank.")
+            raise ValueError(f"{protocol_label} endpoint condition cannot configure a rank.")
         return None
     if rank is None:
-        raise ValueError("Round-4B projected condition requires subspace_rank.")
+        raise ValueError(f"{protocol_label} projected condition requires subspace_rank.")
     parameter = next(model.parameters())
     return load_runtime_basis(
         manifest_path=path,
@@ -559,6 +566,69 @@ def _resolve_round4b_run_provenance(cfg: DictConfig) -> dict[str, Any]:
         raise ValueError("Round-4B parent commit must be a full lowercase Git SHA.")
     payload["round4a_parent_tag"] = str(diagnosis_cfg.get("round4a_parent_tag"))
     payload["round4a_parent_commit"] = parent_commit
+    for key, value in payload.items():
+        cfg.ASRE_DIAGNOSIS[key] = value
+    return payload
+
+
+def _resolve_round4c_run_provenance(cfg: DictConfig) -> dict[str, Any]:
+    """Validate the frozen Round-4B inputs used by a formal Round-4C run."""
+    diagnosis_cfg = cfg.get("ASRE_DIAGNOSIS", {})
+    if str(diagnosis_cfg.get("protocol", "")) != ROUND4C_PROTOCOL:
+        return {}
+    stems = (
+        "preflight_report",
+        "machinery_report",
+        "calibration_split_manifest",
+        "subspace_basis_manifest",
+        "subspace_diagnostics",
+        "energy_analysis_manifest",
+        "energy_candidate_ranks",
+        "round4b_summary",
+    )
+    required = [item for stem in stems for item in (f"{stem}_path", f"{stem}_sha256")]
+    required.extend(("round4b_source_commit", "cumulative_energy_analysis_commit"))
+    missing = [
+        key
+        for key in required
+        if diagnosis_cfg.get(key) is None or str(diagnosis_cfg.get(key)).strip() == ""
+    ]
+    if missing:
+        raise ValueError(f"Round-4C run provenance is incomplete: {missing}.")
+    payload: dict[str, Any] = {}
+    for stem in stems:
+        path_key = f"{stem}_path"
+        digest_key = f"{stem}_sha256"
+        path = _resolve_required_artifact_path(
+            diagnosis_cfg.get(path_key),
+            label=path_key,
+            protocol_label="ASRE Round 4C",
+        )
+        digest = sha256_file(path)
+        if digest != str(diagnosis_cfg.get(digest_key)):
+            raise ValueError(f"Round-4C artifact SHA256 mismatch: {path}")
+        payload[path_key] = str(path)
+        payload[digest_key] = digest
+    validate_basis_manifest(
+        Path(payload["subspace_basis_manifest_path"]),
+        expected_sha256=payload["subspace_basis_manifest_sha256"],
+        verify_files=False,
+    )
+    for key in ("round4b_source_commit", "cumulative_energy_analysis_commit"):
+        commit = str(diagnosis_cfg.get(key))
+        if len(commit) != 40 or any(c not in "0123456789abcdef" for c in commit):
+            raise ValueError(f"Round-4C {key} must be a full lowercase Git SHA.")
+        payload[key] = commit
+    energy = json.loads(
+        Path(payload["energy_analysis_manifest_path"]).read_text(encoding="utf-8")
+    )
+    if (
+        energy.get("status") != "complete"
+        or energy.get("git_commit_hash") != payload["cumulative_energy_analysis_commit"]
+        or energy.get("provenance", {}).get("basis_manifest_sha256")
+        != payload["subspace_basis_manifest_sha256"]
+    ):
+        raise ValueError("Round-4C cumulative-energy provenance is incompatible.")
     for key, value in payload.items():
         cfg.ASRE_DIAGNOSIS[key] = value
     return payload
@@ -1644,7 +1714,10 @@ def _run_task_to_file(
                     )
                 }
             )
-        if str(diagnosis_cfg.get("protocol", "")) == ROUND4B_PROTOCOL:
+        if str(diagnosis_cfg.get("protocol", "")) in {
+            ROUND4B_PROTOCOL,
+            ROUND4C_PROTOCOL,
+        }:
             results.update(
                 {
                     key: diagnosis_cfg.get(key)
@@ -1665,6 +1738,14 @@ def _run_task_to_file(
                         "round4a_parent_commit",
                         "round4a_summary_path",
                         "round4a_summary_sha256",
+                        "energy_analysis_manifest_path",
+                        "energy_analysis_manifest_sha256",
+                        "energy_candidate_ranks_path",
+                        "energy_candidate_ranks_sha256",
+                        "round4b_summary_path",
+                        "round4b_summary_sha256",
+                        "round4b_source_commit",
+                        "cumulative_energy_analysis_commit",
                     )
                 }
             )
@@ -1975,6 +2056,7 @@ def eval_single_process(cfg: DictConfig):
         **_resolve_g0_run_provenance(cfg),
         **_resolve_round4a_run_provenance(cfg),
         **_resolve_round4b_run_provenance(cfg),
+        **_resolve_round4c_run_provenance(cfg),
     }
 
     diagnosis_enabled = bool(diagnosis_cfg.get("enabled", False))
@@ -2150,6 +2232,7 @@ def eval_single_process(cfg: DictConfig):
                 G0_PROTOCOL,
                 ROUND4A_PROTOCOL,
                 ROUND4B_PROTOCOL,
+                ROUND4C_PROTOCOL,
             }:
                 resume_keys.extend(
                     [
@@ -2173,6 +2256,7 @@ def eval_single_process(cfg: DictConfig):
                 G0_PROTOCOL,
                 ROUND4A_PROTOCOL,
                 ROUND4B_PROTOCOL,
+                ROUND4C_PROTOCOL,
             }:
                 resume_keys.extend(
                     [
@@ -2251,6 +2335,31 @@ def eval_single_process(cfg: DictConfig):
                         "round4a_parent_commit",
                         "round4a_summary_path",
                         "round4a_summary_sha256",
+                    ]
+                )
+            if str(cfg.ASRE_DIAGNOSIS.get("protocol")) == ROUND4C_PROTOCOL:
+                resume_keys.extend(
+                    [
+                        "preflight_report_path",
+                        "preflight_report_sha256",
+                        "machinery_report_path",
+                        "machinery_report_sha256",
+                        "calibration_split_manifest_path",
+                        "calibration_split_manifest_sha256",
+                        "subspace_basis_manifest_path",
+                        "subspace_basis_manifest_sha256",
+                        "subspace_diagnostics_path",
+                        "subspace_diagnostics_sha256",
+                        "subspace_basis_kind",
+                        "subspace_rank",
+                        "energy_analysis_manifest_path",
+                        "energy_analysis_manifest_sha256",
+                        "energy_candidate_ranks_path",
+                        "energy_candidate_ranks_sha256",
+                        "round4b_summary_path",
+                        "round4b_summary_sha256",
+                        "round4b_source_commit",
+                        "cumulative_energy_analysis_commit",
                     ]
                 )
             mismatches = {
