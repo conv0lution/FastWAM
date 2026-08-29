@@ -63,7 +63,8 @@ def launch(args: argparse.Namespace) -> Path:
     gpu_ids = tuple(args.gpu_ids)
     if len(gpu_ids) != 4 or len(set(gpu_ids)) != 4:
         raise ValueError("Offline wave requires four distinct GPUs.")
-    available = {int(item["index"]) for item in _gpu_inventory()}
+    inventory = _gpu_inventory()
+    available = {int(item["index"]) for item in inventory}
     if set(gpu_ids) - available:
         raise ValueError("Requested GPU is unavailable.")
     split = _read(args.split.resolve())
@@ -162,6 +163,10 @@ def launch(args: argparse.Namespace) -> Path:
             "protocol": ROUND4B_PROTOCOL,
             "wave": args.wave,
             "condition_indices": list(indices),
+            "gpu_ids": list(gpu_ids),
+            "gpu_inventory": [
+                item for item in inventory if int(item["index"]) in gpu_ids
+            ],
             "conditions": [conditions[index].name for index in indices],
             "all_succeeded": all(states.values()) and failure is None,
             "condition_complete": states,

@@ -30,7 +30,10 @@ from experiments.asre_diagnosis.g0.launch_four_gpu import (  # noqa: E402
     _child_environment,
     _launcher_lock,
 )
-from experiments.asre_diagnosis.round4a.launch_wave import _gpu_inventory  # noqa: E402
+from experiments.asre_diagnosis.round4a.launch_wave import (  # noqa: E402
+    _gpu_inventory,
+    stable_gpu_inventory,
+)
 from experiments.asre_diagnosis.round4b.basis import LATE_LAYERS  # noqa: E402
 
 
@@ -72,7 +75,8 @@ def launch(args: argparse.Namespace) -> Path:
     gpu_ids = tuple(args.gpu_ids)
     if len(gpu_ids) != 4 or len(set(gpu_ids)) != 4 or any(gpu < 0 for gpu in gpu_ids):
         raise ValueError("Round-4B fit requires four distinct nonnegative GPU IDs.")
-    available = {int(record["index"]) for record in _gpu_inventory()}
+    inventory = _gpu_inventory()
+    available = {int(record["index"]) for record in inventory}
     if set(gpu_ids) - available:
         raise ValueError(f"Unavailable GPUs: {sorted(set(gpu_ids) - available)}")
     output_dir = args.output_dir.resolve()
@@ -93,6 +97,9 @@ def launch(args: argparse.Namespace) -> Path:
         "phase": args.phase,
         "git_commit_hash": commit,
         "gpu_ids": list(gpu_ids),
+        "gpu_inventory": stable_gpu_inventory(
+            [record for record in inventory if int(record["index"]) in gpu_ids]
+        ),
         "split_path": str(args.split.resolve()),
         "split_sha256": split_sha,
         "checkpoint_path": str(args.checkpoint.resolve()),

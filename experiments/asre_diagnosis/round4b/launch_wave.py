@@ -100,7 +100,8 @@ def launch(args: argparse.Namespace) -> Path:
     gpu_ids = tuple(args.gpu_ids)
     if len(gpu_ids) != len(indices) or len(set(gpu_ids)) != len(gpu_ids):
         raise ValueError(f"This wave requires {len(indices)} distinct GPU IDs.")
-    available = {int(item["index"]) for item in _gpu_inventory()}
+    inventory = _gpu_inventory()
+    available = {int(item["index"]) for item in inventory}
     if set(gpu_ids) - available:
         raise ValueError("Requested GPU is unavailable.")
     preflight = _read(args.preflight.resolve())
@@ -242,6 +243,10 @@ def launch(args: argparse.Namespace) -> Path:
             "all_succeeded": all(states.values()) and failure is None,
             "conditions": [conditions[index].name for index in indices],
             "condition_indices": list(indices),
+            "gpu_ids": list(gpu_ids),
+            "gpu_inventory": [
+                item for item in inventory if int(item["index"]) in gpu_ids
+            ],
             "task_ids": list(task_ids),
             "num_trials": trials,
             "git_commit_hash": git_commit(PROJECT_ROOT),
