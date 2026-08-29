@@ -263,10 +263,9 @@ def _write_condition_metadata(root: Path, condition: str) -> None:
                 "action_horizon": 32,
                 "number_of_inference_steps": 10,
                 "replan_steps": 10,
-                "subspace_basis_kind": "svd" if rank is not None else None,
-                "subspace_rank": rank,
                 **shared_identity,
                 "condition_config": {
+                    "condition_name": condition,
                     "subspace_basis_kind": "svd" if rank is not None else None,
                     "subspace_rank": rank,
                     "disabled_video_layers": list(range(15)),

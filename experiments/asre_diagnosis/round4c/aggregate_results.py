@@ -140,9 +140,12 @@ def load_online(
             condition.removeprefix("svd_r")
         )
         expected_kind = None if expected_rank is None else "svd"
+        condition_config = metadata.get("condition_config")
         if (
-            metadata.get("subspace_basis_kind") != expected_kind
-            or metadata.get("subspace_rank") != expected_rank
+            not isinstance(condition_config, dict)
+            or condition_config.get("condition_name") != condition
+            or condition_config.get("subspace_basis_kind") != expected_kind
+            or condition_config.get("subspace_rank") != expected_rank
         ):
             raise ValueError(f"Round-4C rank provenance mismatch: {condition}")
         files = sorted((directory / "libero_spatial").glob("gpu*_task*_results.json"))
