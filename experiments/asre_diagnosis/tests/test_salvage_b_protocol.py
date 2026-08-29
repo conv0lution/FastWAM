@@ -2,15 +2,21 @@ from __future__ import annotations
 
 import inspect
 
+import pandas as pd
 import pytest
 import torch
 
 from experiments.asre_diagnosis.salvage_b.architecture_audit import build_report
+from experiments.asre_diagnosis.salvage_b import world_manifest as world_manifest_module
+from experiments.asre_diagnosis.common import sha256_file
 from experiments.asre_diagnosis.salvage_b.world_manifest import (
     ACTION_NOISE_SHAPE,
     DRAWS_PER_SAMPLE,
+    PROMPT_PREFIX,
     VIDEO_NOISE_SHAPE,
     _draws,
+    _load_official_task_identities,
+    _select_records,
 )
 from experiments.asre_diagnosis.salvage_b.world_runtime import load_processed_sample
 from fastwam.models.wan22.mot import MoT
@@ -164,4 +170,126 @@ def test_processed_world_target_pairing_is_fail_closed() -> None:
             dataset=_SubstitutingDataset(_sample()),
             record=record,
             prompt_cache=_prompt_cache(),
+        )
+
+
+def test_world_manifest_resolves_lerobot_task_indices_through_frozen_prompt_cache(
+    tmp_path, monkeypatch
+) -> None:
+    descriptions = {task_id: f"official task {task_id}" for task_id in range(10)}
+    # This is the permutation present in the official LeRobot export: its
+    # internal task_index is not the online LIBERO suite task_id.
+    dataset_task_for_official = {
+        0: 0,
+        1: 5,
+        2: 1,
+        3: 6,
+        4: 2,
+        5: 7,
+        6: 3,
+        7: 8,
+        8: 4,
+        9: 9,
+    }
+    prompts = {
+        f"{PROMPT_PREFIX}{description}": {
+            "task_id": task_id,
+            "task_description": description,
+            "context": torch.zeros(1, 128, 4096),
+            "context_mask": torch.ones(1, 128, dtype=torch.bool),
+        }
+        for task_id, description in descriptions.items()
+    }
+    prompt_cache = tmp_path / "prompt_context_cache.pt"
+    torch.save({"prompts": prompts}, prompt_cache)
+    preflight = {
+        "state": {
+            "prompt_context_cache_path": str(prompt_cache),
+            "prompt_context_cache_sha256": sha256_file(prompt_cache),
+        }
+    }
+    by_description, identities = _load_official_task_identities(preflight)
+    assert by_description[descriptions[1]] == 1
+    assert identities[1] == {
+        "task_id": 1,
+        "task_description": descriptions[1],
+    }
+
+    rows = []
+    for official_task_id in range(10):
+        for trial in range(10):
+            episode_id = official_task_id * 10 + trial
+            start = episode_id * 33
+            row = {
+                "episode_index": episode_id,
+                "length": 33,
+                "dataset_from_index": start,
+                "dataset_to_index": start + 33,
+                "tasks": [descriptions[official_task_id]],
+                "stats/task_index/min": dataset_task_for_official[official_task_id],
+                "data/chunk_index": 0,
+                "data/file_index": episode_id,
+            }
+            for camera in (
+                "observation.images.image",
+                "observation.images.wrist_image",
+            ):
+                row[f"videos/{camera}/chunk_index"] = 0
+                row[f"videos/{camera}/file_index"] = episode_id
+                row[f"videos/{camera}/from_timestamp"] = float(episode_id)
+                row[f"videos/{camera}/to_timestamp"] = float(episode_id + 1)
+            rows.append(row)
+    monkeypatch.setattr(
+        world_manifest_module, "_episodes", lambda _dataset_root: pd.DataFrame(rows)
+    )
+    donor_mapping = {
+        "mapping_rule": "next trial within official task",
+        "records": [
+            {
+                "task_id": task_id,
+                "recipient_trial": trial,
+                "donor_trial": (trial + 1) % 10,
+            }
+            for task_id in range(10)
+            for trial in range(10)
+        ],
+    }
+    donor_manifest = {
+        "records": [
+            {
+                "task_id": task_id,
+                "source_trial": trial,
+                "task_description": descriptions[task_id],
+                "processed_image_sha256": "a" * 64,
+                "artifact_relative_path": f"task{task_id:02d}_{trial:02d}.pt",
+                "artifact_sha256": "b" * 64,
+            }
+            for task_id in range(10)
+            for trial in range(10)
+        ]
+    }
+    records = _select_records(
+        dataset_root=tmp_path,
+        donor_mapping=donor_mapping,
+        donor_manifest=donor_manifest,
+        official_task_id_by_description=by_description,
+    )
+    assert len(records) == 100
+    task_one = [record for record in records if record["task_id"] == 1]
+    assert len(task_one) == 10
+    assert {record["task_description"] for record in task_one} == {
+        descriptions[1]
+    }
+    assert {record["dataset_task_id"] for record in task_one} == {5}
+    assert {record["donor_task_id"] for record in task_one} == {1}
+
+    mismatched_donor = dict(donor_manifest)
+    mismatched_donor["records"] = [dict(record) for record in donor_manifest["records"]]
+    mismatched_donor["records"][11]["task_description"] = "wrong semantic task"
+    with pytest.raises(ValueError, match="donor semantic identity"):
+        _select_records(
+            dataset_root=tmp_path,
+            donor_mapping=donor_mapping,
+            donor_manifest=mismatched_donor,
+            official_task_id_by_description=by_description,
         )

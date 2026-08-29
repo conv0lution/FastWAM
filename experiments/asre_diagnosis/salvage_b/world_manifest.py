@@ -31,6 +31,10 @@ ACTION_NOISE_SHAPE = (32, 7)
 VIDEO_INFERENCE_STEPS = 10
 VIDEO_INFERENCE_SHIFT = 5.0
 NATIVE_WORLD_METRIC = "pure_noise_native_future_latent_reconstruction_mse"
+PROMPT_PREFIX = (
+    "A video recorded from a robot's point of view executing the following "
+    "instruction: "
+)
 
 
 def _sha256_file(path: Path) -> str:
@@ -115,10 +119,121 @@ def _task_id(row: Mapping[str, Any]) -> int:
     return int(value)
 
 
+def _task_description(row: Mapping[str, Any]) -> str:
+    values = row["tasks"]
+    if hasattr(values, "tolist"):
+        values = values.tolist()
+    if not isinstance(values, (list, tuple)) or len(values) != 1:
+        raise ValueError(f"Expected exactly one task description, got {values!r}.")
+    return str(values[0])
+
+
+def _load_official_task_identities(
+    preflight: Mapping[str, Any],
+) -> tuple[dict[str, int], list[dict[str, Any]]]:
+    """Resolve dataset task descriptions to the frozen online suite IDs.
+
+    LeRobot's internal ``task_index`` ordering is not the LIBERO suite ordering
+    used by the frozen prompt cache, donor mapping, and Round-4C action results.
+    The prompt cache is already a hash-frozen input and carries both identities,
+    so it is the authoritative bridge between those namespaces.
+    """
+
+    path = Path(str(preflight["state"]["prompt_context_cache_path"])).resolve()
+    if not path.is_file():
+        raise FileNotFoundError(f"Missing frozen prompt-context cache: {path}")
+    if _sha256_file(path) != str(
+        preflight["state"]["prompt_context_cache_sha256"]
+    ):
+        raise ValueError("Frozen prompt-context cache drifted before task resolution.")
+    payload = torch.load(path, map_location="cpu", weights_only=False)
+    prompts = payload.get("prompts") if isinstance(payload, Mapping) else None
+    if not isinstance(prompts, Mapping):
+        raise ValueError(f"Malformed frozen prompt-context cache: {path}")
+
+    by_description: dict[str, int] = {}
+    by_task_id: dict[int, str] = {}
+    for prompt, raw_entry in prompts.items():
+        if not isinstance(raw_entry, Mapping):
+            raise ValueError("Frozen prompt-context cache contains a malformed entry.")
+        task_id = int(raw_entry.get("task_id", -1))
+        description = str(raw_entry.get("task_description", ""))
+        if task_id not in TASKS or not description:
+            raise ValueError(
+                "Frozen prompt-context cache has an invalid task identity: "
+                f"task_id={task_id}, description={description!r}."
+            )
+        if str(prompt) != f"{PROMPT_PREFIX}{description}":
+            raise ValueError(
+                "Frozen prompt-context cache prompt/description identity drifted."
+            )
+        if description in by_description and by_description[description] != task_id:
+            raise ValueError(
+                f"Task description maps to multiple suite IDs: {description!r}."
+            )
+        if task_id in by_task_id and by_task_id[task_id] != description:
+            raise ValueError(f"Suite task {task_id} maps to multiple descriptions.")
+        by_description[description] = task_id
+        by_task_id[task_id] = description
+
+    if set(by_task_id) != set(TASKS) or len(by_description) != len(TASKS):
+        raise ValueError(
+            "Frozen prompt-context cache must define exactly one identity for each "
+            "LIBERO-Spatial suite task 0..9."
+        )
+    identities = [
+        {"task_id": task_id, "task_description": by_task_id[task_id]}
+        for task_id in TASKS
+    ]
+    return by_description, identities
+
+
 def _select_records(
-    *, dataset_root: Path, donor_mapping: Mapping[str, Any], donor_manifest: Mapping[str, Any]
+    *,
+    dataset_root: Path,
+    donor_mapping: Mapping[str, Any],
+    donor_manifest: Mapping[str, Any],
+    official_task_id_by_description: Mapping[str, int],
 ) -> list[dict[str, Any]]:
     episodes = _episodes(dataset_root)
+    dataset_description_by_id: dict[int, str] = {}
+    dataset_id_by_official_task: dict[int, int] = {}
+    for _, row in episodes.iterrows():
+        payload = row.to_dict()
+        dataset_task_id = _task_id(payload)
+        task_description = _task_description(payload)
+        official_task_id = official_task_id_by_description.get(task_description)
+        if official_task_id is None:
+            raise ValueError(
+                "Official LeRobot trajectory has a task description absent from "
+                f"the frozen prompt cache: {task_description!r}."
+            )
+        if dataset_task_id not in TASKS or int(official_task_id) not in TASKS:
+            raise ValueError("World task identity falls outside the registered 0..9 set.")
+        if (
+            dataset_task_id in dataset_description_by_id
+            and dataset_description_by_id[dataset_task_id] != task_description
+        ):
+            raise ValueError(
+                f"LeRobot task_index {dataset_task_id} maps to multiple descriptions."
+            )
+        if (
+            int(official_task_id) in dataset_id_by_official_task
+            and dataset_id_by_official_task[int(official_task_id)] != dataset_task_id
+        ):
+            raise ValueError(
+                f"LIBERO suite task {official_task_id} maps to multiple LeRobot IDs."
+            )
+        dataset_description_by_id[dataset_task_id] = task_description
+        dataset_id_by_official_task[int(official_task_id)] = dataset_task_id
+    if (
+        set(dataset_description_by_id) != set(TASKS)
+        or set(dataset_id_by_official_task) != set(TASKS)
+    ):
+        raise ValueError(
+            "LeRobot and frozen LIBERO suite task identities must form a total "
+            "bijection over task IDs 0..9."
+        )
     mappings = {
         (int(row["task_id"]), int(row["recipient_trial"])): row
         for row in donor_mapping["records"]
@@ -132,13 +247,24 @@ def _select_records(
         candidates = []
         for _, row in episodes.iterrows():
             payload = row.to_dict()
-            if _task_id(payload) != task_id:
+            task_description = _task_description(payload)
+            resolved_task_id = official_task_id_by_description.get(task_description)
+            if int(resolved_task_id) != task_id:
                 continue
+            dataset_task_id = _task_id(payload)
             length = int(payload["length"])
             if length < 33:
                 continue
             episode_id = int(payload["episode_index"])
-            order = _stable_seed("salvage-b-world-episode", SELECTION_SEED, task_id, episode_id)
+            # Preserve the originally frozen LeRobot sampling rule in its own
+            # namespace.  Relabeling to suite IDs must not silently change the
+            # selected source episodes or offsets.
+            order = _stable_seed(
+                "salvage-b-world-episode",
+                SELECTION_SEED,
+                dataset_task_id,
+                episode_id,
+            )
             candidates.append((order, payload))
         candidates.sort(key=lambda item: (item[0], int(item[1]["episode_index"])))
         if len(candidates) < SAMPLES_PER_TASK:
@@ -148,20 +274,30 @@ def _select_records(
             length = int(row["length"])
             valid_start_count = length - 32
             offset = _stable_seed(
-                "salvage-b-world-offset", SELECTION_SEED, task_id, episode_id
+                "salvage-b-world-offset",
+                SELECTION_SEED,
+                _task_id(row),
+                episode_id,
             ) % valid_start_count
             episode_from = int(row["dataset_from_index"])
             episode_to = int(row["dataset_to_index"])
             if episode_to - episode_from != length:
                 raise ValueError(f"Episode length/index mismatch for episode {episode_id}.")
             dataset_index = episode_from + int(offset)
-            task_values = row["tasks"]
-            if hasattr(task_values, "tolist"):
-                task_values = task_values.tolist()
-            task_description = str(task_values[0])
+            task_description = _task_description(row)
+            dataset_task_id = _task_id(row)
             mapping = mappings[(task_id, trial)]
             donor_trial = int(mapping["donor_trial"])
             donor = observations[(task_id, donor_trial)]
+            if (
+                int(donor.get("task_id", -1)) != task_id
+                or str(donor.get("task_description")) != task_description
+            ):
+                raise ValueError(
+                    "Frozen donor semantic identity does not match the selected world "
+                    f"task {task_id}: {donor.get('task_description')!r} != "
+                    f"{task_description!r}."
+                )
             sample_id = (
                 f"libero_spatial_task{task_id:02d}_trial{trial:02d}_"
                 f"episode{episode_id:06d}_offset{int(offset):04d}"
@@ -184,6 +320,7 @@ def _select_records(
                 {
                     "sample_id": sample_id,
                     "task_id": task_id,
+                    "dataset_task_id": dataset_task_id,
                     "trial": trial,
                     "task_description": task_description,
                     "episode_id": episode_id,
@@ -355,11 +492,29 @@ def build(args: argparse.Namespace) -> None:
         raise ValueError("World-manifest inputs drifted from their preflight hashes.")
     donor_mapping = json.loads(donor_mapping_path.read_text(encoding="utf-8"))
     donor_manifest = json.loads(donor_manifest_path.read_text(encoding="utf-8"))
+    official_task_id_by_description, official_task_identities = (
+        _load_official_task_identities(preflight)
+    )
     records = _select_records(
         dataset_root=dataset_root,
         donor_mapping=donor_mapping,
         donor_manifest=donor_manifest,
+        official_task_id_by_description=official_task_id_by_description,
     )
+    dataset_task_identities = [
+        {
+            "task_id": task_id,
+            "dataset_task_id": int(
+                next(record for record in records if record["task_id"] == task_id)[
+                    "dataset_task_id"
+                ]
+            ),
+            "task_description": next(
+                record for record in records if record["task_id"] == task_id
+            )["task_description"],
+        }
+        for task_id in TASKS
+    ]
     basis_split_path = Path(str(preflight["basis"]["split_path"])).resolve()
     if (
         not basis_split_path.is_file()
@@ -442,9 +597,21 @@ def build(args: argparse.Namespace) -> None:
             "selection_seed": SELECTION_SEED,
             "selection_rule": (
                 "per task hash-order valid episodes, take first 10; one hash-selected "
-                "unpadded 33-action-frame/9-video-frame clip per episode"
+                "unpadded 33-action-frame/9-video-frame clip per episode; source "
+                "episode and offset seeds use LeRobot dataset_task_id"
             ),
             "task_ids": list(TASKS),
+            "task_identity_source": {
+                "namespace": "frozen_LIBERO-Spatial_prompt_context_cache",
+                "path": preflight["state"]["prompt_context_cache_path"],
+                "sha256": preflight["state"]["prompt_context_cache_sha256"],
+                "reason": (
+                    "LeRobot internal task_index ordering differs from the online "
+                    "LIBERO suite task_id ordering used by donors and action results"
+                ),
+                "identities": official_task_identities,
+                "dataset_to_suite_identities": dataset_task_identities,
+            },
             "samples_per_task": SAMPLES_PER_TASK,
             "sample_count": len(records),
             "records": records,
