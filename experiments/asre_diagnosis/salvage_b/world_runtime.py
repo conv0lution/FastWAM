@@ -457,6 +457,35 @@ def _prefill_prefix(
     }
 
 
+def _validate_and_align_donor_image(
+    *,
+    donor_image: torch.Tensor,
+    current_image: torch.Tensor,
+    expected_frozen_sha256: str,
+) -> tuple[torch.Tensor, str, str]:
+    """Verify the frozen donor before representation dtype alignment.
+
+    Round-3B donor artifacts are frozen as bfloat16, while decoded world clips
+    are float32.  The artifact identity must therefore be checked on the raw
+    donor tensor.  Equality with the current image must instead be checked
+    after aligning the donor to the exact model-input representation.
+    """
+
+    frozen_hash = tensor_sha256(donor_image.detach().cpu())
+    if frozen_hash != str(expected_frozen_sha256):
+        raise ValueError("World manifest donor image hash drifted.")
+    if donor_image.ndim == 3:
+        donor_image = donor_image.unsqueeze(0)
+    donor_image = donor_image.to(dtype=current_image.dtype)
+    if tuple(donor_image.shape) != tuple(current_image.shape):
+        raise ValueError("Frozen current/donor images do not share the exact representation shape.")
+    current_hash = tensor_sha256(current_image.detach().cpu())
+    aligned_donor_hash = tensor_sha256(donor_image.detach().cpu())
+    if current_hash == aligned_donor_hash:
+        raise ValueError("Wrong endpoint donor is identical to the current world image.")
+    return donor_image, frozen_hash, current_hash
+
+
 def prepare_world_sample(
     *,
     model,
@@ -473,21 +502,16 @@ def prepare_world_sample(
     context = model_inputs["context"]
     context_mask = model_inputs["context_mask"]
     current_image = processed["video"][:, :, 0]
-    donor_image = _load_donor_image(
+    raw_donor_image = _load_donor_image(
         donor_bundle,
         task_id=int(record["task_id"]),
         episode_id=int(record["trial"]),
-    ).to(dtype=current_image.dtype)
-    if donor_image.ndim == 3:
-        donor_image = donor_image.unsqueeze(0)
-    if tuple(donor_image.shape) != tuple(current_image.shape):
-        raise ValueError("Frozen current/donor images do not share the exact representation shape.")
-    current_hash = tensor_sha256(current_image.cpu())
-    donor_hash = tensor_sha256(donor_image.cpu())
-    if donor_hash != str(record["donor_processed_image_sha256"]):
-        raise ValueError("World manifest donor image hash drifted.")
-    if current_hash == donor_hash:
-        raise ValueError("Wrong endpoint donor is identical to the current world image.")
+    )
+    donor_image, donor_hash, current_hash = _validate_and_align_donor_image(
+        donor_image=raw_donor_image,
+        current_image=current_image,
+        expected_frozen_sha256=str(record["donor_processed_image_sha256"]),
+    )
     current_latent = model._encode_input_image_latents_tensor(
         current_image.to(device=model.device, dtype=model.torch_dtype), tiled=False
     )

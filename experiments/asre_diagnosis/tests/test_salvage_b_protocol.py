@@ -18,7 +18,11 @@ from experiments.asre_diagnosis.salvage_b.world_manifest import (
     _load_official_task_identities,
     _select_records,
 )
-from experiments.asre_diagnosis.salvage_b.world_runtime import load_processed_sample
+from experiments.asre_diagnosis.salvage_b.world_runtime import (
+    _validate_and_align_donor_image,
+    load_processed_sample,
+)
+from experiments.asre_diagnosis.round3b.donor import tensor_sha256
 from fastwam.models.wan22.mot import MoT
 
 
@@ -170,6 +174,35 @@ def test_processed_world_target_pairing_is_fail_closed() -> None:
             dataset=_SubstitutingDataset(_sample()),
             record=record,
             prompt_cache=_prompt_cache(),
+        )
+
+
+def test_donor_identity_is_verified_before_world_dtype_alignment() -> None:
+    current = torch.zeros((1, 3, 4, 5), dtype=torch.float32)
+    frozen_donor = torch.ones((1, 3, 4, 5), dtype=torch.bfloat16)
+    frozen_hash = tensor_sha256(frozen_donor)
+    aligned, observed_hash, current_hash = _validate_and_align_donor_image(
+        donor_image=frozen_donor,
+        current_image=current,
+        expected_frozen_sha256=frozen_hash,
+    )
+    assert aligned.dtype == current.dtype
+    assert observed_hash == frozen_hash
+    assert current_hash == tensor_sha256(current)
+    assert tensor_sha256(aligned) != frozen_hash
+
+    with pytest.raises(ValueError, match="donor image hash drifted"):
+        _validate_and_align_donor_image(
+            donor_image=frozen_donor,
+            current_image=current,
+            expected_frozen_sha256="0" * 64,
+        )
+
+    with pytest.raises(ValueError, match="identical to the current world image"):
+        _validate_and_align_donor_image(
+            donor_image=torch.zeros_like(frozen_donor),
+            current_image=current,
+            expected_frozen_sha256=tensor_sha256(torch.zeros_like(frozen_donor)),
         )
 
 
