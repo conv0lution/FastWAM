@@ -447,6 +447,37 @@ def _run_dtype(
     action_expert = mot.mixtures["action"]
     original_video_dtype = next(video_expert.parameters()).dtype
     original_action_dtype = next(action_expert.parameters()).dtype
+    execution_device = stock_state["stock_input_tokens"].device
+    # A5000-class cards cannot safely hold the complete bf16 checkpoint plus a
+    # promoted fp32 layer and all four comparison paths.  For non-native dtype
+    # audits, park every transformer block on CPU and stream exactly one paired
+    # video/action layer to the execution device.  This is numerically identical
+    # to the previous per-layer promotion, but removes the full-model GPU
+    # residency from the fp32 peak.
+    stream_blocks = bool(
+        dtype != original_video_dtype
+        or dtype != original_action_dtype
+        or next(video_expert.blocks[0].parameters()).device != execution_device
+    )
+    memory_start_allocated = (
+        int(torch.cuda.memory_allocated(execution_device))
+        if execution_device.type == "cuda"
+        else 0
+    )
+    if stream_blocks:
+        for block in video_expert.blocks:
+            block.to(device="cpu", dtype=original_video_dtype)
+        for block in action_expert.blocks:
+            block.to(device="cpu", dtype=original_action_dtype)
+        if execution_device.type == "cuda":
+            torch.cuda.empty_cache()
+    memory_after_offload = (
+        int(torch.cuda.memory_allocated(execution_device))
+        if execution_device.type == "cuda"
+        else 0
+    )
+    if execution_device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(execution_device)
 
     stock_video_x = _cast(stock_state["stock_input_tokens"], dtype)
     stock_action_x = _cast(stock_state["action_tokens"], dtype)
@@ -474,10 +505,11 @@ def _run_dtype(
     isolated_reference: dict[str, Any] | None = None
     try:
         for layer_idx in range(mot.num_layers):
+            print(f"[NumEq] {dtype_name} layer {layer_idx:02d}/{mot.num_layers - 1:02d}", flush=True)
             video_block = video_expert.blocks[layer_idx]
             action_block = action_expert.blocks[layer_idx]
-            video_block.to(dtype=dtype)
-            action_block.to(dtype=dtype)
+            video_block.to(device=execution_device, dtype=dtype)
+            action_block.to(device=execution_device, dtype=dtype)
 
             input_metrics = tensor_error_metrics(
                 stock_video_x[:, PREFIX_TOKENS:], factor_x
@@ -682,8 +714,25 @@ def _run_dtype(
             prefix_x = prefix_next
             factor_x = factor_next
 
-            video_block.to(dtype=original_video_dtype)
-            action_block.to(dtype=original_action_dtype)
+            # The next hidden states remain live; every other layer-local tensor
+            # can be released before the next block is materialized.
+            del (
+                stock_video_io,
+                stock_action_io,
+                prefix_io,
+                factor_io,
+                stock_mixed,
+                prefix_mixed,
+                factor_mixed,
+            )
+            if stream_blocks:
+                video_block.to(device="cpu", dtype=original_video_dtype)
+                action_block.to(device="cpu", dtype=original_action_dtype)
+                if execution_device.type == "cuda":
+                    torch.cuda.empty_cache()
+            else:
+                video_block.to(dtype=original_video_dtype)
+                action_block.to(dtype=original_action_dtype)
 
         head = video_expert.head
         original_head_dtype = next(head.parameters()).dtype
@@ -706,10 +755,22 @@ def _run_dtype(
         finally:
             head.to(dtype=original_head_dtype)
     finally:
+        # On a streamed audit, keeping blocks on CPU is intentional: no later
+        # model execution occurs, and moving the complete checkpoint back would
+        # recreate the OOM risk during teardown or an optional fp16 audit.
+        restore_device = "cpu" if stream_blocks else execution_device
         for block in video_expert.blocks:
-            block.to(dtype=original_video_dtype)
+            block.to(device=restore_device, dtype=original_video_dtype)
         for block in action_expert.blocks:
-            block.to(dtype=original_action_dtype)
+            block.to(device=restore_device, dtype=original_action_dtype)
+        if execution_device.type == "cuda":
+            torch.cuda.empty_cache()
+
+    peak_memory_allocated = (
+        int(torch.cuda.max_memory_allocated(execution_device))
+        if execution_device.type == "cuda"
+        else 0
+    )
 
     return {
         "dtype": dtype_name,
@@ -727,11 +788,18 @@ def _run_dtype(
             next(video_expert.parameters()).dtype == original_video_dtype
             and next(action_expert.parameters()).dtype == original_action_dtype
         ),
+        "streamed_blocks_from_cpu": stream_blocks,
+        "cuda_memory_bytes": {
+            "start_allocated": memory_start_allocated,
+            "after_block_offload": memory_after_offload,
+            "peak_after_offload_reset": peak_memory_allocated,
+        },
         "execution_method": (
             "The identical frozen prepared tensors were cast to the requested "
-            "dtype. One video block and its matching action block were promoted "
-            "at a time, executed through the stock and factorized graphs, then "
-            "restored. This avoids materializing a second full fp32 checkpoint."
+            "dtype. For non-native dtypes, all transformer blocks were parked "
+            "on CPU and one matching video/action pair was streamed to the GPU "
+            "at a time, executed through both graphs, then immediately offloaded. "
+            "This avoids retaining the full bf16 checkpoint beside an fp32 layer."
         ),
     }
 
@@ -1144,6 +1212,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "action_consumer_calls": len(captures.get("action_calls", [])),
             "world_consumer_calls": len(captures.get("world_calls", [])),
         }
+        # The consumer-object audit above intentionally executes both native
+        # paths.  Release allocator-held workspaces before beginning the much
+        # heavier layerwise comparison.
+        if stock_tokens.device.type == "cuda":
+            torch.cuda.empty_cache()
 
         stock_state = {
             "stock_input_tokens": stock_tokens,
@@ -1171,6 +1244,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         if args.include_fp16:
             requested.append(torch.float16)
         for dtype in requested:
+            print(f"[NumEq] Starting layerwise audit for {dtype}", flush=True)
             result = _run_dtype(
                 model=model,
                 stock_state=stock_state,

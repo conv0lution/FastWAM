@@ -41,4 +41,6 @@ if [[ "$INCLUDE_FP16" == "1" ]]; then
   ARGS+=(--include-fp16)
 fi
 
-exec "$PYTHON_BIN" -m experiments.asre_diagnosis.salvage_b.numerical_equivalence "${ARGS[@]}"
+AUDIT_LOG="$OUTPUT_ROOT/logs/numerical_equivalence.log"
+"$PYTHON_BIN" -m experiments.asre_diagnosis.salvage_b.numerical_equivalence "${ARGS[@]}" \
+  2>&1 | tee "$AUDIT_LOG"
