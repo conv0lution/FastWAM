@@ -315,7 +315,16 @@ def _artifact(path: Path) -> dict[str, Any]:
     }
 
 
-def _validate_frozen_inputs(args: argparse.Namespace) -> dict[str, Any]:
+def _validate_frozen_inputs(
+    args: argparse.Namespace, *, expected_commit: str | None = None
+) -> dict[str, Any]:
+    """Validate the frozen machinery bundle against its owning source commit.
+
+    ``expected_commit`` is used only by post-publication machinery audits that
+    must consume the exact artifacts produced by an earlier, completed run.
+    The registered Salvage-B driver keeps the fail-closed default: its inputs
+    must belong to the currently checked-out commit.
+    """
     preflight_path = args.preflight.resolve()
     world_path = args.world_manifest.resolve()
     stochastic_path = args.stochastic_manifest.resolve()
@@ -325,7 +334,9 @@ def _validate_frozen_inputs(args: argparse.Namespace) -> dict[str, Any]:
     world = read_json(world_path)
     stochastic = read_json(stochastic_path)
     targets = read_json(targets_path)
-    current_commit = git_commit(PROJECT_ROOT)
+    current_commit = (
+        git_commit(PROJECT_ROOT) if expected_commit is None else str(expected_commit)
+    )
     if not (
         preflight.get("artifact_type") == "asre_salvage_b_preflight_report"
         and preflight.get("protocol") == SALVAGE_B_PROTOCOL

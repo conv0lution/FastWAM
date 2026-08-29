@@ -81,3 +81,32 @@ The final human/GPT handoff is generated automatically at:
 ```
 
 No manual model-assisted analysis is needed to create that report.
+
+## Final numerical-equivalence confirmation
+
+`run_numerical_equivalence.sh` is a post-publication machinery audit, not a
+new ASRE experiment. It reuses the exact frozen sample and draw from the
+completed `retry_20260830_dtypegatefix` run and compares the stock joint and
+cache-factorized first pure-noise step in BF16 and FP32. It additionally emits
+per-layer hidden/Q/K/V/attention/block errors, a logical mask audit, a dynamic
+same-cache-object audit, and an isolated explicit-FP64 attention reference.
+
+The FP32 execution promotes only one matching video/action block at a time and
+restores it immediately. This preserves full-graph arithmetic while avoiding
+a second full FP32 copy of the roughly 12 GB BF16 checkpoint on one A5000.
+The scientific pipeline, ranks, datasets, action results, world results, and
+classification thresholds are never touched.
+
+Run from a clean committed worktree:
+
+```bash
+SALVAGE_B_NUMEQ_GPU_ID=4 \
+SALVAGE_B_NUMEQ_SOURCE_ROOT="$PWD/asre_results/salvage_b_world_action_dissociation/retry_20260830_dtypegatefix" \
+SALVAGE_B_NUMEQ_OUTPUT_ROOT="$PWD/asre_results/salvage_b_numerical_equivalence" \
+./experiments/asre_diagnosis/salvage_b/run_numerical_equivalence.sh
+```
+
+FP16 is optional and disabled by default. Enable it with
+`SALVAGE_B_NUMEQ_INCLUDE_FP16=1`. The completion sentinel is
+`<output-root>/final_decision.json`; no successful Salvage-B artifact is
+overwritten.

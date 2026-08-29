@@ -37,6 +37,14 @@ def test_factorization_budget_is_derived_from_execution_dtype() -> None:
     )
 
 
+def test_frozen_input_validator_exposes_post_publication_commit_override() -> None:
+    parameters = machinery_tests.inspect.signature(
+        machinery_tests._validate_frozen_inputs
+    ).parameters
+    assert parameters["expected_commit"].default is None
+    assert parameters["expected_commit"].kind.name == "KEYWORD_ONLY"
+
+
 def test_manual_native_metric_is_terminal_future_latent_mse() -> None:
     target = torch.tensor(
         [[[[[99.0]], [[1.0]], [[3.0]]], [[[99.0]], [[2.0]], [[4.0]]]]]
