@@ -120,7 +120,7 @@ def run_preflight(
     round4a = _read(round4a_summary_path)
     analyses = round4a.get("axis_analysis", {})
     if (
-        round4a.get("artifact_type") != "asre_round4a_aggregate"
+        round4a.get("artifact_type") != "asre_round4a_summary"
         or analyses.get("token", {}).get("classification") != "WEAK"
         or analyses.get("head", {}).get("classification") != "WEAK"
         or round4a.get("recommendation", {}).get("next_step_category")
