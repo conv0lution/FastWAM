@@ -906,6 +906,33 @@ def _normal_artifact_inventory(
 def _normal_markdown(summary: Mapping[str, Any]) -> str:
     endpoint = summary["world_endpoint_gate"]
     classification = summary["classification"]["classification"]
+    factorization = summary["phase_a"].get("factorization_equivalence", {})
+    numerical_policy = factorization.get("numerical_equivalence_policy", {})
+    token_equivalence = factorization.get("token_equivalence", {})
+    prediction_equivalence = factorization.get("prediction_equivalence", {})
+    if all(
+        isinstance(value, (int, float))
+        for value in (
+            token_equivalence.get("relative_rmse"),
+            prediction_equivalence.get("relative_rmse"),
+            numerical_policy.get("relative_rmse_max"),
+        )
+    ):
+        factorization_note = (
+            "The mathematically equivalent masked-SDPA factorization was validated "
+            "under an execution-dtype-derived numerical budget: token relative RMSE "
+            f"`{100.0 * float(token_equivalence['relative_rmse']):.4f}%`, prediction "
+            f"relative RMSE `{100.0 * float(prediction_equivalence['relative_rmse']):.4f}%`, "
+            f"budget `{100.0 * float(numerical_policy['relative_rmse_max']):.4f}%` "
+            f"for `{numerical_policy.get('dtype')}`. Pointwise allclose is descriptive, "
+            "not the gate, because the stock and factorized calls use different fully "
+            "masked sequence extents."
+        )
+    else:
+        factorization_note = (
+            "Runtime machinery validated the mathematically equivalent masked-SDPA "
+            "factorization under its execution-dtype-derived numerical budget."
+        )
     lines = [
         "# Fast-WAM ASRE Salvage B — Final Report",
         "",
@@ -939,6 +966,7 @@ def _normal_markdown(summary: Mapping[str, Any]) -> str:
             "Runtime machinery passed stock-equivalence, same-object reach, intervention "
             "reach to both consumers, no-bypass, rank-0/rank-D endpoints, and r97/r170 "
             "shape/key/head identity.",
+            factorization_note,
             "",
             "## Projection/basis provenance",
             "",
@@ -1298,6 +1326,9 @@ def aggregate_final(
             "source_locations": architecture["source_locations"],
             "native_training_objective": architecture["native_training_objective"],
             "runtime_machinery_passed": True,
+            "factorization_equivalence": machinery.get("checks", {}).get(
+                "stock_joint_vs_factorized_first_pure_noise_step", {}
+            ),
         },
         "native_world_metric": architecture["native_metric"],
         "world_dataset": {

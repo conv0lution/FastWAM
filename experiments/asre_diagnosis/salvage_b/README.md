@@ -47,6 +47,15 @@ No DDP is used. Frozen Round-4C action episodes are verified and reused; they
 are not rerun. The GPU work is limited to the shared-interface machinery check
 and native world-loss evaluation.
 
+The stock joint call and the cache-factorized call use mathematically
+equivalent causal masks but different fully masked SDPA sequence extents. Their
+real-checkpoint equivalence gate therefore uses
+`max(0.2%, 2 * execution-dtype epsilon)` relative RMSE, while still requiring
+exact future inputs, identical shapes, finite values, the same cache objects,
+intervention reach to both consumers, and no raw-prefix bypass. Pointwise
+`allclose` is recorded descriptively because it is not stable across BF16 SDPA
+partition shapes.
+
 ## Run
 
 The formal preflight requires all source changes outside the selected output
