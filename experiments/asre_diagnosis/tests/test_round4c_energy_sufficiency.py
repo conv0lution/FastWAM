@@ -26,7 +26,10 @@ from experiments.asre_diagnosis.round4c.definitions import (
     WAVES,
     validate_energy_candidates,
 )
-from experiments.asre_diagnosis.round4c.launch_wave import _complete
+from experiments.asre_diagnosis.round4c.launch_wave import (
+    _complete,
+    _validate_smoke_donor_assignments,
+)
 from experiments.asre_diagnosis.round4c.plot_results import plot
 
 
@@ -96,6 +99,34 @@ def test_round4c_rejects_rank_basis_and_schedule_drift() -> None:
     cfg["replacement_video_layers"] = list(range(16, 30))
     with pytest.raises(ValueError, match="replacement layers"):
         resolve_condition(cfg, 30)
+
+
+def test_round4c_smoke_donor_validation_distinguishes_current_endpoint() -> None:
+    current, wrong = build_round4c_conditions(30)[:2]
+    _validate_smoke_donor_assignments([], condition=current)
+    with pytest.raises(ValueError, match="donor assignments drifted"):
+        _validate_smoke_donor_assignments(
+            [
+                {
+                    "recipient_task_id": 0,
+                    "recipient_trial": 0,
+                    "recipient_first_query_image_verified": True,
+                }
+            ],
+            condition=current,
+        )
+
+    assignments = [
+        {
+            "recipient_task_id": 0,
+            "recipient_trial": trial,
+            "recipient_first_query_image_verified": True,
+        }
+        for trial in range(2)
+    ]
+    _validate_smoke_donor_assignments(assignments, condition=wrong)
+    with pytest.raises(ValueError, match="donor assignments drifted"):
+        _validate_smoke_donor_assignments([], condition=wrong)
 
 
 def test_registered_energy_labels_are_exactly_provenanced() -> None:

@@ -22,6 +22,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from experiments.asre_diagnosis.common import (  # noqa: E402
     ROUND4C_PROTOCOL,
+    Round4BCondition,
     atomic_write_json,
     build_round4c_conditions,
     git_commit,
@@ -54,6 +55,32 @@ def _read(path: Path) -> dict[str, Any]:
 
 def _expected_condition(index: int):
     return build_round4c_conditions(30)[index]
+
+
+def _validate_smoke_donor_assignments(
+    assignments: Any, *, condition: Round4BCondition
+) -> None:
+    if not isinstance(assignments, list):
+        raise ValueError(f"Smoke donor assignments drifted for {condition.name}.")
+
+    # The current endpoint performs no late-layer replacement, so it must not
+    # emit per-episode donor assignments. Replacement conditions must record
+    # both frozen smoke-trial assignments and verify the recipient query image.
+    if not condition.replacement_video_layers:
+        if assignments:
+            raise ValueError(f"Smoke donor assignments drifted for {condition.name}.")
+        return
+
+    if (
+        len(assignments) != 2
+        or [int(row["recipient_trial"]) for row in assignments] != [0, 1]
+        or any(int(row["recipient_task_id"]) != 0 for row in assignments)
+        or any(
+            row.get("recipient_first_query_image_verified") is not True
+            for row in assignments
+        )
+    ):
+        raise ValueError(f"Smoke donor assignments drifted for {condition.name}.")
 
 
 def _complete(
@@ -117,13 +144,7 @@ def _validate_smoke(root: Path, *, index: int, basis_sha256: str, donor_sha256: 
         raise ValueError(f"Smoke task provenance is incomplete for {condition.name}.")
     result = _read(result_paths[0])
     assignments = result.get("donor_assignments", [])
-    if (
-        len(assignments) != 2
-        or [int(row["recipient_trial"]) for row in assignments] != [0, 1]
-        or any(int(row["recipient_task_id"]) != 0 for row in assignments)
-        or any(row.get("recipient_first_query_image_verified") is not True for row in assignments)
-    ):
-        raise ValueError(f"Smoke donor assignments drifted for {condition.name}.")
+    _validate_smoke_donor_assignments(assignments, condition=condition)
     traces = sorted((directory / TASK_SUITE / "action_traces").glob("task0_trial*.jsonl"))
     if len(traces) != 2:
         raise ValueError(f"Smoke action traces are incomplete for {condition.name}.")
