@@ -3,13 +3,35 @@ from __future__ import annotations
 import unittest
 
 from experiments.asre_diagnosis.common import (
+    ROUND4C_PROTOCOL,
     SALVAGE_A_PROTOCOL,
     build_salvage_a_conditions,
     resolve_condition,
 )
+from experiments.asre_diagnosis.salvage_a.preflight import (
+    ROUND4C_ANALYSIS_COMMIT,
+    ROUND4C_ARTIFACT_TYPE,
+    _validate_round4c_authorization,
+)
 
 
 class SalvageAConditionTest(unittest.TestCase):
+    def test_round4c_aggregate_authorizes_salvage(self) -> None:
+        frozen = {
+            "artifact_type": ROUND4C_ARTIFACT_TYPE,
+            "protocol": ROUND4C_PROTOCOL,
+            "status": "complete",
+            "classification": {"classification": "WEAK"},
+            "stop_rule_applied": True,
+            "later_stage_launched": False,
+            "git_commit_hash": ROUND4C_ANALYSIS_COMMIT,
+        }
+        _validate_round4c_authorization(frozen)
+
+        drifted = dict(frozen, artifact_type="asre_round4c_summary")
+        with self.assertRaisesRegex(ValueError, "artifact_type"):
+            _validate_round4c_authorization(drifted)
+
     def test_frozen_eight_condition_matrix(self) -> None:
         conditions = build_salvage_a_conditions(30)
         self.assertEqual(

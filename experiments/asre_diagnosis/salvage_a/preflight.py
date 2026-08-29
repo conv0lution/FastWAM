@@ -37,6 +37,7 @@ ROUND4C_SUMMARY_SHA256 = "b6108d134197c0825c4f8f2bcb11f87bab6645d3c714033cae5515
 VALID_STATE_MANIFEST_SHA256 = "a05ebb6b50d64eb022103269a0eef595e749fe8c16e49e996ba08669f44378cd"
 DONOR_OBSERVATION_MANIFEST_SHA256 = "3a568b0a47e7cacf26914c881c859362d84743d4b5194017c5d126a0d85ba5bd"
 EXPECTED_CHECKPOINT_NAME = "libero_uncond_2cam224.pt"
+ROUND4C_ARTIFACT_TYPE = "asre_round4c_aggregate"
 
 
 def _read(path: Path) -> dict[str, Any]:
@@ -57,6 +58,36 @@ def _require_sha(path: Path, expected: str, label: str) -> str:
     if observed != expected:
         raise ValueError(f"Frozen {label} SHA256 drifted: {observed} != {expected}.")
     return observed
+
+
+def _validate_round4c_authorization(round4c: dict[str, Any]) -> None:
+    expected = {
+        "artifact_type": ROUND4C_ARTIFACT_TYPE,
+        "protocol": ROUND4C_PROTOCOL,
+        "status": "complete",
+        "classification": "WEAK",
+        "stop_rule_applied": True,
+        "later_stage_launched": False,
+        "git_commit_hash": ROUND4C_ANALYSIS_COMMIT,
+    }
+    observed = {
+        "artifact_type": round4c.get("artifact_type"),
+        "protocol": round4c.get("protocol"),
+        "status": round4c.get("status"),
+        "classification": round4c.get("classification", {}).get("classification"),
+        "stop_rule_applied": round4c.get("stop_rule_applied"),
+        "later_stage_launched": round4c.get("later_stage_launched"),
+        "git_commit_hash": round4c.get("git_commit_hash"),
+    }
+    mismatch = {
+        key: {"expected": expected[key], "observed": observed[key]}
+        for key in expected
+        if observed[key] != expected[key]
+    }
+    if mismatch:
+        raise ValueError(
+            f"Frozen Round-4C result does not authorize Salvage A: {mismatch}."
+        )
 
 
 def _validate_git(output_root: Path) -> dict[str, Any]:
@@ -108,16 +139,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     git = _validate_git(output_root)
 
     round4c = _read(round4c_path)
-    if (
-        round4c.get("artifact_type") != "asre_round4c_summary"
-        or round4c.get("protocol") != ROUND4C_PROTOCOL
-        or round4c.get("status") != "complete"
-        or round4c.get("classification", {}).get("classification") != "WEAK"
-        or round4c.get("stop_rule_applied") is not True
-        or round4c.get("later_stage_launched") is not False
-        or round4c.get("git_commit_hash") != ROUND4C_ANALYSIS_COMMIT
-    ):
-        raise ValueError("Frozen Round-4C result does not authorize Salvage A.")
+    _validate_round4c_authorization(round4c)
 
     valid = _read(valid_path)
     source = Path(str(valid["source_manifest_path"])).resolve()
