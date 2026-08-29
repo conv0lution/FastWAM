@@ -7,6 +7,7 @@ import csv
 import hashlib
 import json
 import os
+import re
 import sys
 import tempfile
 from collections import defaultdict
@@ -278,6 +279,296 @@ def analyze_online(
     return summary_rows, contrast_rows, classification
 
 
+def split_online_keys(
+    split: Mapping[str, Any],
+    available_keys: Sequence[tuple[str, int, int]],
+) -> dict[str, list[tuple[str, int, int]]]:
+    """Map the frozen SVD fit/holdout episode split onto paired online trials."""
+
+    per_task = split.get("per_task")
+    if not isinstance(per_task, list) or len(per_task) != 10:
+        raise ValueError("Round-4B split must contain exactly ten per-task partitions.")
+    partitions: dict[str, list[tuple[str, int, int]]] = {
+        "calibration": [],
+        "heldout": [],
+    }
+    observed_tasks: set[int] = set()
+    for record in per_task:
+        task_id = int(record["task_id"])
+        if task_id in observed_tasks:
+            raise ValueError(f"Duplicate task in Round-4B split: {task_id}")
+        observed_tasks.add(task_id)
+        fit = list(map(int, record["fit_episode_ids"]))
+        holdout = list(map(int, record["holdout_episode_ids"]))
+        if (
+            len(fit) != 8
+            or len(holdout) != 2
+            or set(fit) & set(holdout)
+            or set(fit) | set(holdout) != set(range(10))
+        ):
+            raise ValueError(f"Malformed 8/2 episode split for task {task_id}.")
+        partitions["calibration"].extend(
+            ("libero_spatial", task_id, trial) for trial in sorted(fit)
+        )
+        partitions["heldout"].extend(
+            ("libero_spatial", task_id, trial) for trial in sorted(holdout)
+        )
+    if observed_tasks != set(range(10)):
+        raise ValueError("Round-4B split task IDs must be exactly 0..9.")
+    available = set(available_keys)
+    combined = set(partitions["calibration"]) | set(partitions["heldout"])
+    if (
+        len(partitions["calibration"]) != 80
+        or len(partitions["heldout"]) != 20
+        or set(partitions["calibration"]) & set(partitions["heldout"])
+        or combined != available
+    ):
+        raise ValueError("Frozen split does not map exactly onto the 100 online episodes.")
+    return partitions
+
+
+def analyze_online_by_split(
+    outcomes: Mapping[str, Mapping[tuple[str, int, int], int]],
+    split: Mapping[str, Any],
+    *,
+    bootstrap_samples: int = 10_000,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Stratify the already-paired online outcomes by SVD fit versus holdout trials."""
+
+    partitions = split_online_keys(split, sorted(outcomes["current_all"]))
+    summary_rows: list[dict[str, Any]] = []
+    contrast_rows: list[dict[str, Any]] = []
+    task_rows: list[dict[str, Any]] = []
+    rates: dict[tuple[str, str], float] = {}
+    for split_name in ("calibration", "heldout"):
+        keys = partitions[split_name]
+        arrays = {
+            condition: np.asarray(
+                [outcomes[condition][key] for key in keys], dtype=np.int8
+            )
+            for condition in CONDITIONS
+        }
+        zero = np.zeros(len(keys), dtype=np.int8)
+        for condition in CONDITIONS:
+            rate = comparison_statistics(
+                keys,
+                zero,
+                arrays[condition],
+                bootstrap_samples=bootstrap_samples,
+                bootstrap_seed=4206,
+                seed_label=f"split-rate-{split_name}-{condition}",
+            )
+            current = comparison_statistics(
+                keys,
+                arrays["current_all"],
+                arrays[condition],
+                bootstrap_samples=bootstrap_samples,
+                bootstrap_seed=4206,
+                seed_label=f"split-current-{split_name}-{condition}",
+            )
+            wrong = comparison_statistics(
+                keys,
+                arrays["wrong_all"],
+                arrays[condition],
+                bootstrap_samples=bootstrap_samples,
+                bootstrap_seed=4206,
+                seed_label=f"split-wrong-{split_name}-{condition}",
+            )
+            success_rate = float(arrays[condition].mean())
+            rates[(split_name, condition)] = success_rate
+            summary_rows.append(
+                {
+                    "split": split_name,
+                    "condition": condition,
+                    "display_name": DISPLAY[condition],
+                    "successes": int(arrays[condition].sum()),
+                    "episodes": len(keys),
+                    "success_rate": success_rate,
+                    "paired_ci_low": rate["paired_ci_low"],
+                    "paired_ci_high": rate["paired_ci_high"],
+                    "task_hierarchical_ci_low": rate["task_hierarchical_ci_low"],
+                    "task_hierarchical_ci_high": rate["task_hierarchical_ci_high"],
+                    "delta_vs_current": current["delta_success_rate"],
+                    "delta_vs_wrong": wrong["delta_success_rate"],
+                }
+            )
+            for reference, stats in (("current_all", current), ("wrong_all", wrong)):
+                contrast_rows.append(
+                    {
+                        "split": split_name,
+                        "comparison": f"{condition}_minus_{reference}",
+                        "reference_condition": reference,
+                        "target_condition": condition,
+                        "primary_matched_rank_contrast": False,
+                        **stats,
+                    }
+                )
+            for task_id in range(10):
+                task_values = [
+                    outcomes[condition][key] for key in keys if key[1] == task_id
+                ]
+                task_rows.append(
+                    {
+                        "split": split_name,
+                        "condition": condition,
+                        "display_name": DISPLAY[condition],
+                        "task_id": task_id,
+                        "successes": int(sum(task_values)),
+                        "trials": len(task_values),
+                        "success_rate": float(np.mean(task_values)),
+                    }
+                )
+        for rank in (256, 768, 1536):
+            reference = f"random_r{rank}"
+            target = f"svd_r{rank}"
+            stats = comparison_statistics(
+                keys,
+                arrays[reference],
+                arrays[target],
+                bootstrap_samples=bootstrap_samples,
+                bootstrap_seed=4206,
+                seed_label=f"split-svd-random-{split_name}-{rank}",
+            )
+            contrast_rows.append(
+                {
+                    "split": split_name,
+                    "comparison": f"svd_minus_random_r{rank}",
+                    "reference_condition": reference,
+                    "target_condition": target,
+                    "primary_matched_rank_contrast": True,
+                    **stats,
+                }
+            )
+    for row in summary_rows:
+        row["heldout_minus_calibration"] = (
+            rates[("heldout", row["condition"])]
+            - rates[("calibration", row["condition"])]
+        )
+    return summary_rows, contrast_rows, task_rows
+
+
+_MATRIX_PATTERN = re.compile(r"^layer(?P<layer>\d+)_(?P<kind>[kv])$")
+
+
+def analyze_energy_capture(
+    diagnostics: Mapping[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Produce absolute-energy-weighted and per-matrix ΔZ capture summaries."""
+
+    ranks = tuple(map(int, diagnostics.get("ranks", [])))
+    if ranks != (256, 768, 1536):
+        raise ValueError(f"Unexpected Round-4B ranks: {ranks}")
+    fit_by_matrix = diagnostics.get("fit_by_matrix")
+    heldout_by_matrix = diagnostics.get("heldout_by_matrix")
+    if not isinstance(fit_by_matrix, dict) or not isinstance(heldout_by_matrix, dict):
+        raise ValueError("Diagnostics lack fit/held-out per-matrix energy records.")
+    if set(fit_by_matrix) != set(heldout_by_matrix) or len(fit_by_matrix) != 30:
+        raise ValueError("Diagnostics must contain the same 30 late-layer K/V matrices.")
+    diagnostic_rows = {
+        (str(row["matrix"]), int(row["rank"])): row
+        for row in diagnostics.get("rows", [])
+    }
+    detail_rows: list[dict[str, Any]] = []
+    for matrix in sorted(fit_by_matrix):
+        match = _MATRIX_PATTERN.fullmatch(matrix)
+        if match is None:
+            raise ValueError(f"Malformed diagnostic matrix name: {matrix}")
+        fit = fit_by_matrix[matrix]
+        heldout = heldout_by_matrix[matrix]
+        fit_total = float(fit["fit_total_energy"])
+        heldout_total = float(heldout["total_energy"])
+        if fit_total <= 0.0 or heldout_total <= 0.0:
+            raise ValueError(f"Non-positive ΔZ energy for {matrix}.")
+        for rank in ranks:
+            rank_key = str(rank)
+            fit_fraction = float(fit["fit_captured_fraction"][rank_key])
+            heldout_fraction = float(heldout["captured_fraction"][rank_key])
+            heldout_captured = float(heldout["captured_energy"][rank_key])
+            source = diagnostic_rows.get((matrix, rank))
+            if source is None or not np.isclose(
+                heldout_captured / heldout_total, heldout_fraction, rtol=1e-9, atol=1e-12
+            ):
+                raise ValueError(f"Inconsistent diagnostic energy record: {matrix} r{rank}")
+            detail_rows.append(
+                {
+                    "matrix": matrix,
+                    "layer": int(match.group("layer")),
+                    "tensor_kind": match.group("kind").upper(),
+                    "rank": rank,
+                    "calibration_rows": int(fit["fit_rows"]),
+                    "calibration_total_energy": fit_total,
+                    "calibration_captured_energy": fit_fraction * fit_total,
+                    "calibration_captured_fraction": fit_fraction,
+                    "heldout_total_energy": heldout_total,
+                    "heldout_captured_energy": heldout_captured,
+                    "heldout_captured_fraction": heldout_fraction,
+                    "generalization_gap_calibration_minus_heldout": (
+                        fit_fraction - heldout_fraction
+                    ),
+                    "effective_rank": float(source["effective_rank"]),
+                    "spectral_gap_ratio": float(source["spectral_gap_ratio"]),
+                }
+            )
+    summary_rows: list[dict[str, Any]] = []
+    for rank in ranks:
+        for scope in ("all", "K", "V"):
+            selected = [
+                row
+                for row in detail_rows
+                if row["rank"] == rank
+                and (scope == "all" or row["tensor_kind"] == scope)
+            ]
+            calibration_total = sum(row["calibration_total_energy"] for row in selected)
+            calibration_captured = sum(
+                row["calibration_captured_energy"] for row in selected
+            )
+            heldout_total = sum(row["heldout_total_energy"] for row in selected)
+            heldout_captured = sum(row["heldout_captured_energy"] for row in selected)
+            calibration_fractions = np.asarray(
+                [row["calibration_captured_fraction"] for row in selected]
+            )
+            heldout_fractions = np.asarray(
+                [row["heldout_captured_fraction"] for row in selected]
+            )
+            calibration_weighted = calibration_captured / calibration_total
+            heldout_weighted = heldout_captured / heldout_total
+            summary_rows.append(
+                {
+                    "rank": rank,
+                    "scope": scope,
+                    "matrix_count": len(selected),
+                    "calibration_total_energy": calibration_total,
+                    "calibration_captured_energy": calibration_captured,
+                    "calibration_weighted_captured_fraction": calibration_weighted,
+                    "calibration_matrix_mean_captured_fraction": float(
+                        calibration_fractions.mean()
+                    ),
+                    "calibration_matrix_min_captured_fraction": float(
+                        calibration_fractions.min()
+                    ),
+                    "calibration_matrix_max_captured_fraction": float(
+                        calibration_fractions.max()
+                    ),
+                    "heldout_total_energy": heldout_total,
+                    "heldout_captured_energy": heldout_captured,
+                    "heldout_weighted_captured_fraction": heldout_weighted,
+                    "heldout_matrix_mean_captured_fraction": float(
+                        heldout_fractions.mean()
+                    ),
+                    "heldout_matrix_min_captured_fraction": float(
+                        heldout_fractions.min()
+                    ),
+                    "heldout_matrix_max_captured_fraction": float(
+                        heldout_fractions.max()
+                    ),
+                    "weighted_generalization_gap_calibration_minus_heldout": (
+                        calibration_weighted - heldout_weighted
+                    ),
+                }
+            )
+    return summary_rows, detail_rows
+
+
 def _load_actions(path: Path, ids: Sequence[str]) -> tuple[np.ndarray, np.ndarray]:
     with np.load(path, allow_pickle=False) as data:
         observed = list(map(str, data["sample_ids"].tolist()))
@@ -401,6 +692,106 @@ def _markdown(payload: Mapping[str, Any]) -> str:
             f"{row['paired_ci_low']:.1%}–{row['paired_ci_high']:.1%} | "
             f"{row['delta_vs_current']:+.1%} |"
         )
+    split_rows = payload.get("online_split_condition_summary", [])
+    if split_rows:
+        lookup = {(row["split"], row["condition"]): row for row in split_rows}
+        lines.extend(
+            [
+                "",
+                "## Online success by frozen SVD split",
+                "",
+                "This is a post-hoc stratification of the same paired 100 online episodes; "
+                "no online episode was rerun.",
+                "",
+                "| Condition | Calibration trials (n=80) | Held-out trials (n=20) | Δ held-out − calibration |",
+                "|---|---:|---:|---:|",
+            ]
+        )
+        for condition in CONDITIONS:
+            calibration = lookup[("calibration", condition)]
+            heldout = lookup[("heldout", condition)]
+            lines.append(
+                f"| {DISPLAY[condition]} | {calibration['successes']}/80 "
+                f"({calibration['success_rate']:.1%}; "
+                f"{calibration['paired_ci_low']:.1%}–{calibration['paired_ci_high']:.1%}) | "
+                f"{heldout['successes']}/20 ({heldout['success_rate']:.1%}; "
+                f"{heldout['paired_ci_low']:.1%}–{heldout['paired_ci_high']:.1%}) | "
+                f"{heldout['heldout_minus_calibration']:+.1%} |"
+            )
+        primary = [
+            row
+            for row in payload["online_split_contrasts"]
+            if row.get("primary_matched_rank_contrast")
+        ]
+        primary_lookup = {
+            (row["split"], int(row["target_condition"].removeprefix("svd_r"))): row
+            for row in primary
+        }
+        lines.extend(
+            [
+                "",
+                "### Matched-rank SVD minus random",
+                "",
+                "| Rank | Calibration Δ (paired 95% CI) | Held-out Δ (paired 95% CI) |",
+                "|---:|---:|---:|",
+            ]
+        )
+        for rank in (256, 768, 1536):
+            calibration = primary_lookup[("calibration", rank)]
+            heldout = primary_lookup[("heldout", rank)]
+            lines.append(
+                f"| {rank} | {calibration['delta_success_rate']:+.1%} "
+                f"({calibration['paired_ci_low']:+.1%}–{calibration['paired_ci_high']:+.1%}) | "
+                f"{heldout['delta_success_rate']:+.1%} "
+                f"({heldout['paired_ci_low']:+.1%}–{heldout['paired_ci_high']:+.1%}) |"
+            )
+    energy_summary = payload.get("delta_z_energy_capture_summary", [])
+    energy_detail = payload.get("delta_z_energy_capture_by_matrix", [])
+    if energy_summary and energy_detail:
+        lines.extend(
+            [
+                "",
+                "## ΔZ energy capture",
+                "",
+                "Fractions below are weighted by absolute ΔZ Frobenius energy, not an "
+                "unweighted average of layer percentages.",
+                "",
+                "| Rank | Scope | Calibration capture | Held-out capture | Calibration − held-out |",
+                "|---:|---:|---:|---:|---:|",
+            ]
+        )
+        for row in energy_summary:
+            lines.append(
+                f"| {row['rank']} | {row['scope']} | "
+                f"{row['calibration_weighted_captured_fraction']:.2%} | "
+                f"{row['heldout_weighted_captured_fraction']:.2%} | "
+                f"{row['weighted_generalization_gap_calibration_minus_heldout']:+.2%} |"
+            )
+        detail_lookup = {(row["matrix"], row["rank"]): row for row in energy_detail}
+        matrices = sorted(
+            {row["matrix"] for row in energy_detail},
+            key=lambda value: (int(value[5:7]), value[-1]),
+        )
+        lines.extend(
+            [
+                "",
+                "### Per-layer/per-matrix ΔZ capture",
+                "",
+                "Each cell is `calibration / held-out`.",
+                "",
+                "| Matrix | Rank 256 | Rank 768 | Rank 1536 |",
+                "|---|---:|---:|---:|",
+            ]
+        )
+        for matrix in matrices:
+            values = []
+            for rank in (256, 768, 1536):
+                row = detail_lookup[(matrix, rank)]
+                values.append(
+                    f"{row['calibration_captured_fraction']:.2%} / "
+                    f"{row['heldout_captured_fraction']:.2%}"
+                )
+            lines.append(f"| {matrix} | " + " | ".join(values) + " |")
     lines.extend(
         [
             "",
@@ -432,6 +823,10 @@ def _markdown(payload: Mapping[str, Any]) -> str:
 def aggregate(args: argparse.Namespace) -> Path:
     outcomes, task_rows = load_online(args.online_wave1.resolve(), args.online_wave2.resolve())
     online_rows, contrasts, classification = analyze_online(outcomes, task_rows)
+    split = _read(args.split.resolve())
+    split_online_rows, split_contrasts, split_task_rows = analyze_online_by_split(
+        outcomes, split
+    )
     per_state, offline_rows, replan_rows = analyze_offline(
         offline_root=args.offline_root.resolve(),
         split_path=args.split.resolve(),
@@ -441,18 +836,24 @@ def aggregate(args: argparse.Namespace) -> Path:
     machinery = _read(args.machinery.resolve())
     if machinery.get("passed") is not True or diagnostics.get("status") != "complete":
         raise ValueError("Round-4B machinery/diagnostics gate is incomplete.")
+    energy_summary_rows, energy_detail_rows = analyze_energy_capture(diagnostics)
     output = args.output_dir.resolve()
     output.mkdir(parents=True, exist_ok=True)
     _write_csv(output / "online_condition_summary.csv", online_rows)
     _write_csv(output / "online_contrasts.csv", contrasts)
     _write_csv(output / "task_success.csv", task_rows)
+    _write_csv(output / "online_split_condition_summary.csv", split_online_rows)
+    _write_csv(output / "online_split_contrasts.csv", split_contrasts)
+    _write_csv(output / "online_split_task_success.csv", split_task_rows)
     _write_csv(output / "offline_per_state.csv", per_state)
     _write_csv(output / "offline_metric_summary.csv", offline_rows)
     _write_csv(output / "offline_replan_summary.csv", replan_rows)
     _write_csv(output / "subspace_diagnostics.csv", diagnostics["rows"])
+    _write_csv(output / "delta_z_energy_capture_summary.csv", energy_summary_rows)
+    _write_csv(output / "delta_z_energy_capture_by_matrix.csv", energy_detail_rows)
     payload = {
         "artifact_type": "asre_round4b_aggregate",
-        "schema_version": 1,
+        "schema_version": 2,
         "protocol": ROUND4B_PROTOCOL,
         "status": "complete",
         "created_at": now_iso(),
@@ -460,10 +861,15 @@ def aggregate(args: argparse.Namespace) -> Path:
         "online_condition_summary": online_rows,
         "online_contrasts": contrasts,
         "task_success": task_rows,
+        "online_split_condition_summary": split_online_rows,
+        "online_split_contrasts": split_contrasts,
+        "online_split_task_success": split_task_rows,
         "classification": classification,
         "offline_metric_summary": offline_rows,
         "offline_replan_summary": replan_rows,
         "subspace_diagnostics": diagnostics,
+        "delta_z_energy_capture_summary": energy_summary_rows,
+        "delta_z_energy_capture_by_matrix": energy_detail_rows,
         "machinery": machinery,
         "bootstrap": {
             "samples": 10_000,
