@@ -596,6 +596,171 @@ class MoT(nn.Module):
             )
         return x
 
+    def forward_future_video_with_video_cache_tensor(
+        self,
+        future_video_tokens: torch.Tensor,
+        future_video_freqs: torch.Tensor,
+        future_video_t_mod: torch.Tensor,
+        future_video_context: torch.Tensor,
+        future_video_context_mask: torch.Tensor,
+        video_cache_k: list[torch.Tensor],
+        video_cache_v: list[torch.Tensor],
+        future_video_attention_mask: torch.Tensor,
+        disabled_video_prefix_layers: tuple[int, ...] = (),
+    ) -> torch.Tensor:
+        """Run only future-video queries against an external video-prefix cache.
+
+        This is the tensor-only counterpart of
+        :meth:`forward_action_with_video_cache_tensor` for the native video
+        consumer.  It implements the exact factorization induced by
+        ``first_frame_causal`` attention: the prefix is evolved independently
+        with :meth:`prefill_video_cache_tensor`, while future queries attend to
+        the cached prefix K/V and their own, still-live future K/V.
+
+        Crucially, no prefix token or prefix residual tensor is accepted by this
+        method.  The only observation pathway into future-video computation is
+        therefore ``video_cache_k`` / ``video_cache_v``.  Diagnosis code can
+        disable that pathway at selected layers while preserving future-token
+        count, hidden width, attention heads, and all model weights.
+
+        Args:
+            future_video_tokens: Prepared video tokens after removing the
+                prefix, shape ``[B, Sf, D]``.
+            future_video_freqs: RoPE frequencies for those same future tokens.
+            future_video_t_mod: Per-token video time modulation for the future
+                suffix.
+            future_video_context: Prepared video cross-attention context.
+            future_video_context_mask: Cross-attention mask restricted to
+                future query rows, shape ``[B, Sf, L]``.
+            video_cache_k: Per-layer prefix keys from
+                :meth:`prefill_video_cache_tensor`.
+            video_cache_v: Per-layer prefix values from
+                :meth:`prefill_video_cache_tensor`.
+            future_video_attention_mask: Future query rows of the stock video
+                attention mask, shape ``[Sf, Sp + Sf]``.  Prefix columns must
+                come first.
+            disabled_video_prefix_layers: Layers at which future queries use
+                only future K/V.  For Salvage B this is ``tuple(range(15))``;
+                an empty tuple is the stock-current equivalence endpoint.
+
+        Returns:
+            Updated future-video tokens after all layers, shape ``[B, Sf, D]``.
+        """
+        if "video" not in self.mixtures:
+            raise ValueError(
+                "MoT requires `video` expert for "
+                "`forward_future_video_with_video_cache_tensor`."
+            )
+        if future_video_tokens.ndim != 3:
+            raise ValueError(
+                "`future_video_tokens` must be 3D [B,S,D], got shape "
+                f"{tuple(future_video_tokens.shape)}."
+            )
+        if future_video_attention_mask.ndim != 2:
+            raise ValueError(
+                "`future_video_attention_mask` must be 2D [Sf,Sp+Sf], got "
+                f"shape {tuple(future_video_attention_mask.shape)}."
+            )
+
+        future_seq_len = int(future_video_tokens.shape[1])
+        if future_seq_len <= 0:
+            raise ValueError("`future_video_tokens` must contain at least one token.")
+        if int(future_video_attention_mask.shape[0]) != future_seq_len:
+            raise ValueError(
+                "`future_video_attention_mask` query length mismatch: "
+                f"mask={future_video_attention_mask.shape[0]} vs "
+                f"future_tokens={future_seq_len}."
+            )
+        prefix_seq_len = int(future_video_attention_mask.shape[1]) - future_seq_len
+        if prefix_seq_len <= 0:
+            raise ValueError(
+                "`future_video_attention_mask` must contain a non-empty prefix "
+                "before the future-token columns."
+            )
+        if len(video_cache_k) != self.num_layers or len(video_cache_v) != self.num_layers:
+            raise ValueError(
+                "Video prefix cache must contain one K and V tensor per layer: "
+                f"expected {self.num_layers}, got K={len(video_cache_k)} and "
+                f"V={len(video_cache_v)}."
+            )
+
+        disabled_layers = frozenset(int(layer) for layer in disabled_video_prefix_layers)
+        invalid_disabled_layers = sorted(
+            layer for layer in disabled_layers if layer < 0 or layer >= self.num_layers
+        )
+        if invalid_disabled_layers:
+            raise ValueError(
+                "`disabled_video_prefix_layers` contains out-of-range layers: "
+                f"{invalid_disabled_layers}."
+            )
+
+        batch_size = int(future_video_tokens.shape[0])
+        attention_width = self.num_heads * self.attn_head_dim
+        expert = self.mixtures["video"]
+        x = future_video_tokens
+        for layer_idx in range(self.num_layers):
+            block = expert.blocks[layer_idx]
+            (
+                q_future,
+                k_future,
+                v_future,
+                residual_x,
+                gate_msa,
+                shift_mlp,
+                scale_mlp,
+                gate_mlp,
+                _use_gradient_checkpointing,
+            ) = self._build_expert_attention_io(
+                expert=expert,
+                block=block,
+                x=x,
+                freqs=future_video_freqs,
+                t_mod=future_video_t_mod,
+            )
+
+            prefix_k = video_cache_k[layer_idx]
+            prefix_v = video_cache_v[layer_idx]
+            expected_cache_shape = (batch_size, prefix_seq_len, attention_width)
+            if tuple(prefix_k.shape) != expected_cache_shape:
+                raise ValueError(
+                    f"`video_cache_k[{layer_idx}]` shape mismatch: expected "
+                    f"{expected_cache_shape}, got {tuple(prefix_k.shape)}."
+                )
+            if tuple(prefix_v.shape) != expected_cache_shape:
+                raise ValueError(
+                    f"`video_cache_v[{layer_idx}]` shape mismatch: expected "
+                    f"{expected_cache_shape}, got {tuple(prefix_v.shape)}."
+                )
+
+            if layer_idx in disabled_layers:
+                k_cat = k_future
+                v_cat = v_future
+                layer_attention_mask = future_video_attention_mask[:, prefix_seq_len:]
+            else:
+                k_cat = torch.cat([prefix_k, k_future], dim=1)
+                v_cat = torch.cat([prefix_v, v_future], dim=1)
+                layer_attention_mask = future_video_attention_mask
+
+            mixed = flash_attention(
+                q=q_future,
+                k=k_cat,
+                v=v_cat,
+                num_heads=self.num_heads,
+                ctx_mask=layer_attention_mask.to(device=q_future.device),
+            )
+            x = self._apply_expert_post_block_tensor(
+                block=block,
+                residual_x=residual_x,
+                mixed_attn_out=mixed,
+                gate_msa=gate_msa,
+                shift_mlp=shift_mlp,
+                scale_mlp=scale_mlp,
+                gate_mlp=gate_mlp,
+                context=future_video_context,
+                context_mask=future_video_context_mask,
+            )
+        return x
+
     def _forward_joint_layer(
         self,
         video_block: nn.Module,

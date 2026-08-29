@@ -22,6 +22,7 @@ ROUND4A_PROTOCOL = "round4a_matched_content_axis_screen"
 ROUND4B_PROTOCOL = "round4b_low_rank_feature_subspace"
 ROUND4C_PROTOCOL = "round4c_energy_controlled_action_sufficiency"
 SALVAGE_A_PROTOCOL = "salvage_a_action_sensitive_subspace"
+SALVAGE_B_PROTOCOL = "salvage_b_world_action_functional_dissociation"
 
 
 @dataclass(frozen=True)

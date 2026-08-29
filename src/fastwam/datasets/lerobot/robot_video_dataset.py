@@ -238,6 +238,12 @@ class RobotVideoDataset(torch.utils.data.Dataset):
             "action_is_pad": sample["action_is_pad"],
             "proprio_is_pad": sample["proprio_is_pad"],
         }
+        # Formal evaluation code may opt in to this provenance field so a
+        # lower-level decode retry cannot silently substitute a random sample.
+        # Keep the normal training/evaluation batch contract unchanged unless
+        # the caller explicitly requests the identity witness.
+        if getattr(self, "_include_source_dataset_index", False):
+            data["_source_dataset_index"] = int(sample["idx"])
         if self.use_text_embed_cache:
             context, context_mask = self._get_cached_text_context(instruction)
             # NOTE: to keep consistent with wan2.2's behavior
