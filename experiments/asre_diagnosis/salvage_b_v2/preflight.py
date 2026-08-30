@@ -105,6 +105,24 @@ def create_preflight(*, output_root: Path, source_root: Path) -> dict[str, Any]:
             "intervened_layers": list(range(15, 30)),
             "disabled_layers": [],
             "forbidden_helper": "forward_future_video_with_video_cache_tensor",
+            "donor_capture_semantics": (
+                "donor RGB only under current prompt, proprio, noise, and scheduler"
+            ),
+            "basis_coordinate_gate": {
+                "legacy_extractor": (
+                    "FastWAM.infer_action -> MoT.prefill_video_cache_tensor"
+                ),
+                "native_extractor": (
+                    "FastWAM.infer_joint -> MoT._forward_joint_layer"
+                ),
+                "frozen_state_count": 3,
+                "layers": list(range(15, 30)),
+                "tensor_kinds": ["k", "v"],
+                "failure_policy": (
+                    "stop before outcomes and fit native-stock basis on frozen "
+                    "calibration split"
+                ),
+            },
         },
     }
     output_root.mkdir(parents=True, exist_ok=True)

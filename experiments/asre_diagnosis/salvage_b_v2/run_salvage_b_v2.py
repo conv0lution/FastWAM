@@ -101,11 +101,23 @@ def run(args: argparse.Namespace) -> None:
     except RuntimeError:
         report_path = root / "machinery_report.json"
         classification = "NATIVE-CLAMP-IDENTITY-FAILED"
+        reason = "Native shared-node machinery did not pass."
         if report_path.is_file():
             report = json.loads(report_path.read_text(encoding="utf-8"))
             if report.get("native_clamp_identity_passed") is True:
                 classification = "SHARED-NODE-REACH-FAILED"
-        _publish_stop(root, classification, "Native shared-node machinery did not pass.", python)
+                if report.get("donor_observation_only_passed") is not True:
+                    reason = (
+                        "Donor provenance gate failed: Wrong must vary donor RGB only "
+                        "under current prompt/proprio/noise/scheduler inputs."
+                    )
+                elif report.get("basis_coordinate_gate_passed") is not True:
+                    reason = (
+                        "Round-4B basis-coordinate gate failed against native-stock "
+                        "prefix K/V; stop before outcomes and fit a native-stock basis "
+                        "on the frozen calibration split."
+                    )
+        _publish_stop(root, classification, reason, python)
         return
 
     action_base = [python, "-m", "experiments.asre_diagnosis.salvage_b_v2.launch_action", "--preflight", str(preflight), "--output-root", str(root), "--python", python, "--launch-stagger-seconds", str(args.launch_stagger_seconds)]

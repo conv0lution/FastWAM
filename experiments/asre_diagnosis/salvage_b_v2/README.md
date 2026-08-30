@@ -23,3 +23,17 @@ SALVAGE_B_V2_LAUNCH_STAGGER_SECONDS=70 \
 The driver is fail-closed: machinery first, then new Current/Wrong action and
 world endpoints, then r97/r170 only if both endpoint gates pass. It stops
 unconditionally after publication and never launches a later ASRE stage.
+
+Before any rollout, machinery additionally requires:
+
+1. donor capture changes only the RGB observation while current prompt,
+   context, proprio, stochastic inputs, scheduler objects, and schedule
+   arguments remain frozen; and
+2. the frozen Round-4B cache coordinate system matches native-stock prefix
+   K/V on three frozen states, all ten denoising steps, and every layer-15--29
+   K/V matrix.
+
+The detailed second-gate artifact is `basis_coordinate_report.json`. A failure
+publishes `SHARED-NODE-REACH-FAILED` and stops before smoke or outcome runs;
+the required follow-up is a native-stock basis fit on the already frozen
+Round-4B calibration split.

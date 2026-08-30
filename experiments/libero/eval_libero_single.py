@@ -1201,6 +1201,7 @@ def _run_prepared_action_inference(
             if basis_spec is None
             else basis_spec.bases_by_layer,
         )
+        model._salvage_b_v2_last_causal_input_audit = result.causal_input_audit
         return result.prediction["action"], None
 
     infer_method = model.infer_joint if visualize_future_video else model.infer_action
@@ -1377,6 +1378,16 @@ def _predict_action_chunk(
             "raw_action": raw_action.detach().to(device="cpu", dtype=torch.float32).numpy(),
             "executed_action": action.copy(),
         }
+        if str(diagnosis_cfg.get("protocol", "")) == SALVAGE_B_V2_PROTOCOL:
+            causal_audit = getattr(
+                model, "_salvage_b_v2_last_causal_input_audit", None
+            )
+            if not isinstance(causal_audit, dict) or causal_audit.get("passed") is not True:
+                raise RuntimeError(
+                    "Salvage-B-v2 action inference did not publish a passing "
+                    "donor/exogenous-input audit."
+                )
+            trace["native_causal_input_audit"] = causal_audit
     else:
         trace = None
     return action, imgs, predicted_future_frames, trace

@@ -69,7 +69,20 @@ def _complete(root: Path, condition: str, *, tasks: tuple[int, ...], trials: int
         observed_tasks.add(task)
     trace_dir = root / condition / TASK_SUITE / "action_traces"
     traces = list(trace_dir.glob("task*_trial*.jsonl"))
-    return observed_tasks == set(tasks) and len(traces) == len(tasks) * trials
+    if observed_tasks != set(tasks) or len(traces) != len(tasks) * trials:
+        return False
+    for path in traces:
+        records = [
+            json.loads(line)
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        if not records or any(
+            record.get("native_causal_input_audit", {}).get("passed") is not True
+            for record in records
+        ):
+            return False
+    return True
 
 
 def launch(args: argparse.Namespace) -> None:

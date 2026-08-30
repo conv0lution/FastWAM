@@ -1101,6 +1101,7 @@ class FastWAM(torch.nn.Module):
         expected_video_cache_layout: Optional[Mapping[str, Any]] = None,
         return_video_cache_stats: bool = False,
         return_video_cache_deltas: bool = False,
+        return_video_cache_values: bool = False,
         video_cache_delta_layers: Optional[Sequence[int]] = None,
         cache_only: bool = False,
         action_sensitive_interpolation_lambda: Optional[float] = None,
@@ -1175,6 +1176,11 @@ class FastWAM(torch.nn.Module):
             )
         if cache_only and not return_video_cache_deltas:
             raise ValueError("`cache_only` requires `return_video_cache_deltas=true`.")
+        if return_video_cache_values and not cache_only:
+            raise ValueError(
+                "`return_video_cache_values` is a machinery-only diagnostic and "
+                "requires `cache_only=true`."
+            )
         if return_video_cache_deltas and not replacement_enabled:
             raise ValueError("Cache-delta export requires current and donor cache pairs.")
         delta_layers_tuple = normalize_video_layer_indices(
@@ -1690,6 +1696,7 @@ class FastWAM(torch.nn.Module):
                         layer_entry["selected_source"] = hybrid_source
 
         cache_deltas = None
+        cache_values = None
         if return_video_cache_deltas:
             assert replacement_video_cache_k is not None
             assert replacement_video_cache_v is not None
@@ -1711,6 +1718,30 @@ class FastWAM(torch.nn.Module):
                     ("v", current_video_cache_v, replacement_video_cache_v),
                 )
             }
+            if return_video_cache_values:
+                cache_values = {
+                    source_name: {
+                        kind: {
+                            layer: source[layer]
+                            .index_select(1, visible_index)
+                            .detach()
+                            for layer in delta_layers_tuple
+                        }
+                        for kind, source in (("k", source_k), ("v", source_v))
+                    }
+                    for source_name, source_k, source_v in (
+                        (
+                            "current",
+                            current_video_cache_k,
+                            current_video_cache_v,
+                        ),
+                        (
+                            "wrong",
+                            replacement_video_cache_k,
+                            replacement_video_cache_v,
+                        ),
+                    )
+                }
         video_cache_layout = None
         if cache_only or action_sensitive_enabled:
             representative = (
@@ -1737,6 +1768,7 @@ class FastWAM(torch.nn.Module):
         if cache_only:
             return {
                 "video_cache_deltas": cache_deltas,
+                "video_cache_values": cache_values,
                 "video_cache_layout": video_cache_layout,
             }
 

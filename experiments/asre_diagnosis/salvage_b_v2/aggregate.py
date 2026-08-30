@@ -359,6 +359,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "preflight_sha256": sha256_file(root / "preflight_report.json"),
             "basis_manifest_path": preflight["basis"]["path"],
             "basis_manifest_sha256": preflight["basis"]["sha256"],
+            "basis_coordinate_report_path": machinery[
+                "basis_coordinate_report_path"
+            ],
+            "basis_coordinate_report_sha256": sha256_file(
+                Path(machinery["basis_coordinate_report_path"])
+            ),
             "donor_mapping_path": preflight["donors"]["mapping_path"],
             "donor_mapping_sha256": preflight["donors"]["mapping_sha256"],
             "world_manifest_path": preflight["reused_frozen_inputs"]["world_manifest_path"],
@@ -433,6 +439,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "## Controls and provenance",
             "",
             f"- Machinery passed: `{machinery.get('passed')}`; exact stock/capture identity: `{machinery.get('observational_capture_exact_identity')}`; exact rank-D identity: `{machinery.get('rank_d_current_exact_identity')}`.",
+            f"- Donor-observation-only gate passed: `{machinery.get('donor_observation_only_passed')}`. Donor capture changed RGB only; prompt/context, proprio, noise, scheduler objects, and schedule arguments came from the current-recipient call.",
+            f"- Round-4B/native-stock basis-coordinate gate passed: `{machinery.get('basis_coordinate_gate_passed')}` across `{machinery.get('basis_coordinate_sample_count')}` frozen states and all 30 late K/V matrices; detailed artifact: `{machinery.get('basis_coordinate_report_path')}`.",
             f"- Frozen basis: `{preflight['basis']['path']}` (`{preflight['basis']['sha256']}`). No refit was performed.",
             f"- Frozen donor mapping: `{preflight['donors']['mapping_path']}` (`{preflight['donors']['mapping_sha256']}`).",
             "- The official 100-sample world identities, processed targets, and four stochastic starts were reused as pre-outcome inputs only. Their old factorized losses were not read.",

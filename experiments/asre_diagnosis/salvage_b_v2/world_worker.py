@@ -187,6 +187,16 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                         "target_latent_sha256": tensor_sha256(target.detach().cpu()),
                         "native_joint_graph": True,
                         "factorized_helper_used": False,
+                        "donor_observation_only_passed": result.causal_input_audit[
+                            "passed"
+                        ],
+                        "frozen_exogenous_fields_sha256": result.causal_input_audit[
+                            "frozen_exogenous_fields_sha256"
+                        ],
+                        "proprio_source": result.causal_input_audit["proprio_source"],
+                        "task_context_source": result.causal_input_audit[
+                            "task_context_source"
+                        ],
                     }
                 )
             atomic_write_json(output_dir / f"{sample_id}.json", {"rows": rows[-4:]})
