@@ -154,6 +154,9 @@ def launch(args: argparse.Namespace) -> None:
             "EVALUATION.action_horizon=32",
             "EVALUATION.num_inference_steps=10",
             "EVALUATION.replan_steps=10",
+            # The native joint-layer hook is a Python runtime intervention and
+            # must remain visible on every denoising step.
+            "EVALUATION.compile_action_infer=false",
             f"EVALUATION.output_dir={condition_root}",
             "EVALUATION.visualize_future_video=false",
             f"EVALUATION.dataset_stats_path={state['dataset_stats_path']}",

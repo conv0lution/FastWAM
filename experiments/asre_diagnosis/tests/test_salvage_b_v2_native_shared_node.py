@@ -17,7 +17,10 @@ from experiments.asre_diagnosis.salvage_b_v2.definitions import (
     STRONG_ACTION_RECOVERY_MIN,
     STRONG_WORLD_RECOVERY_MAX,
 )
-from experiments.asre_diagnosis.salvage_b_v2.launch_action import _child_environment
+from experiments.asre_diagnosis.salvage_b_v2.launch_action import (
+    _child_environment,
+    launch as launch_action,
+)
 from experiments.asre_diagnosis.salvage_b_v2.native_clamp import (
     FrozenPrefixTrajectory,
     NativePrefixClamp,
@@ -169,6 +172,11 @@ def test_action_child_environment_overwrites_stale_mujoco_gpu(monkeypatch) -> No
     assert environment["MUJOCO_GL"] == "egl"
     assert environment["PYOPENGL_PLATFORM"] == "egl"
     assert "RANK" not in environment
+
+
+def test_action_launcher_forces_uncompiled_native_joint_inference() -> None:
+    source = inspect.getsource(launch_action)
+    assert '"EVALUATION.compile_action_infer=false"' in source
 
 
 def test_round4b_native_coordinate_comparison_checks_every_late_k_v() -> None:
