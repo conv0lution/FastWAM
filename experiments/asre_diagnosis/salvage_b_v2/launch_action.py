@@ -27,6 +27,29 @@ TASK_CONFIG = "libero_uncond_2cam224_1e-4"
 TASK_SUITE = "libero_spatial"
 
 
+def _child_environment(physical_gpu: int) -> dict[str, str]:
+    """Bind CUDA and MuJoCo EGL to the same physical GPU.
+
+    robosuite validates ``MUJOCO_EGL_DEVICE_ID`` against the physical IDs in
+    ``CUDA_VISIBLE_DEVICES`` at import time.  Always overwrite a possibly
+    stale value inherited from the parent shell.
+    """
+
+    environment = dict(os.environ)
+    environment.update(
+        {
+            "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
+            "CUDA_VISIBLE_DEVICES": str(physical_gpu),
+            "MUJOCO_GL": "egl",
+            "PYOPENGL_PLATFORM": "egl",
+            "MUJOCO_EGL_DEVICE_ID": str(physical_gpu),
+        }
+    )
+    for key in ("RANK", "LOCAL_RANK", "WORLD_SIZE"):
+        environment.pop(key, None)
+    return environment
+
+
 def _read(path: Path) -> dict[str, Any]:
     value = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, dict):
@@ -165,10 +188,7 @@ def launch(args: argparse.Namespace) -> None:
         handle = log.open("w", encoding="utf-8")
         handle.write(shlex.join(command) + "\n")
         handle.flush()
-        env = dict(os.environ)
-        env["CUDA_VISIBLE_DEVICES"] = str(args.gpu_ids[slot])
-        for key in ("RANK", "LOCAL_RANK", "WORLD_SIZE"):
-            env.pop(key, None)
+        env = _child_environment(args.gpu_ids[slot])
         process = subprocess.Popen(
             command,
             cwd=PROJECT_ROOT,

@@ -17,6 +17,7 @@ from experiments.asre_diagnosis.salvage_b_v2.definitions import (
     STRONG_ACTION_RECOVERY_MIN,
     STRONG_WORLD_RECOVERY_MAX,
 )
+from experiments.asre_diagnosis.salvage_b_v2.launch_action import _child_environment
 from experiments.asre_diagnosis.salvage_b_v2.native_clamp import (
     FrozenPrefixTrajectory,
     NativePrefixClamp,
@@ -156,6 +157,18 @@ def test_donor_capture_can_only_change_rgb_and_hashes_all_exogenous_inputs() -> 
     assert "input_image=donor_input_image" in source
     assert "infer_kwargs=infer_kwargs" in source
     assert "donor_proprio" not in source
+
+
+def test_action_child_environment_overwrites_stale_mujoco_gpu(monkeypatch) -> None:
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "7")
+    monkeypatch.setenv("MUJOCO_EGL_DEVICE_ID", "7")
+    monkeypatch.setenv("RANK", "12")
+    environment = _child_environment(4)
+    assert environment["CUDA_VISIBLE_DEVICES"] == "4"
+    assert environment["MUJOCO_EGL_DEVICE_ID"] == "4"
+    assert environment["MUJOCO_GL"] == "egl"
+    assert environment["PYOPENGL_PLATFORM"] == "egl"
+    assert "RANK" not in environment
 
 
 def test_round4b_native_coordinate_comparison_checks_every_late_k_v() -> None:
