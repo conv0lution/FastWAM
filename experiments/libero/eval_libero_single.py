@@ -49,6 +49,7 @@ from experiments.asre_diagnosis.common import (
     ROUND4B_PROTOCOL,
     ROUND4C_PROTOCOL,
     SALVAGE_A_PROTOCOL,
+    SALVAGE_B_V2_PROTOCOL,
     atomic_write_json,
     build_run_metadata,
     git_commit,
@@ -206,6 +207,7 @@ def _load_donor_bundle(
         ROUND4B_PROTOCOL,
         ROUND4C_PROTOCOL,
         SALVAGE_A_PROTOCOL,
+        SALVAGE_B_V2_PROTOCOL,
     }:
         if configured:
             raise ValueError(
@@ -220,7 +222,11 @@ def _load_donor_bundle(
             f"bundle; missing ASRE_DIAGNOSIS fields: {missing}."
         )
     artifact_protocol_label = (
-        "ASRE Salvage A" if protocol == SALVAGE_A_PROTOCOL else "ASRE Round 3B"
+        "ASRE Salvage A"
+        if protocol == SALVAGE_A_PROTOCOL
+        else "ASRE Salvage B v2"
+        if protocol == SALVAGE_B_V2_PROTOCOL
+        else "ASRE Round 3B"
     )
     mapping_path = _resolve_required_artifact_path(
         configured["donor_mapping_path"],
@@ -337,12 +343,18 @@ def _load_round4b_basis_spec(
 ) -> Optional[RuntimeBasisSpec | SalvageARuntimeBasisSpec]:
     diagnosis_cfg = cfg.get("ASRE_DIAGNOSIS", {})
     protocol = str(diagnosis_cfg.get("protocol", ""))
-    if protocol not in {ROUND4B_PROTOCOL, ROUND4C_PROTOCOL, SALVAGE_A_PROTOCOL}:
+    if protocol not in {
+        ROUND4B_PROTOCOL,
+        ROUND4C_PROTOCOL,
+        SALVAGE_A_PROTOCOL,
+        SALVAGE_B_V2_PROTOCOL,
+    }:
         return None
     protocol_label = {
         ROUND4B_PROTOCOL: "ASRE Round 4B",
         ROUND4C_PROTOCOL: "ASRE Round 4C",
         SALVAGE_A_PROTOCOL: "ASRE Salvage A",
+        SALVAGE_B_V2_PROTOCOL: "ASRE Salvage B v2",
     }[protocol]
     path = _resolve_required_artifact_path(
         diagnosis_cfg.get("subspace_basis_manifest_path"),
@@ -1137,6 +1149,7 @@ def _run_prepared_action_inference(
     visualize_future_video = bool(cfg.EVALUATION.get("visualize_future_video", False))
     diagnosis_cfg = cfg.get("ASRE_DIAGNOSIS", {})
     diagnosis_enabled = bool(diagnosis_cfg.get("enabled", False))
+    diagnosis_protocol = str(diagnosis_cfg.get("protocol", ""))
     if diagnosis_enabled and visualize_future_video:
         raise ValueError(
             "ASRE_DIAGNOSIS targets infer_action and requires "
@@ -1144,6 +1157,52 @@ def _run_prepared_action_inference(
         )
 
     compile_action_infer = bool(cfg.EVALUATION.get("compile_action_infer", False))
+    if diagnosis_enabled and diagnosis_protocol == SALVAGE_B_V2_PROTOCOL:
+        if compile_action_infer:
+            raise ValueError("Salvage-B v2 requires uncompiled native joint inference.")
+        if tuple(int(x) for x in diagnosis_cfg.get("disabled_video_layers", ())) != ():
+            raise ValueError("Salvage-B v2 must not disable any native video layer.")
+        condition = str(diagnosis_cfg.get("condition_name", ""))
+        replacement_layers = tuple(
+            int(layer) for layer in diagnosis_cfg.get("replacement_video_layers", ())
+        )
+        if condition == "current":
+            if replacement_layers or replacement_input_image is not None:
+                raise ValueError("The native Current condition must be completely unclamped.")
+        else:
+            if replacement_layers != tuple(range(15, 30)):
+                raise ValueError(
+                    "Every non-Current Salvage-B-v2 condition must clamp layers 15-29."
+                )
+            if replacement_input_image is None:
+                raise ValueError("A frozen donor image is required for a native clamp.")
+            if not bool(torch.isfinite(replacement_input_image).all().item()):
+                raise ValueError("The frozen Salvage-B-v2 donor image is non-finite.")
+        basis_spec = _load_round4b_basis_spec(cfg, model)
+        if condition.startswith("svd_") and basis_spec is None:
+            raise ValueError("A projected native clamp requires the frozen SVD basis.")
+        if condition in {"current", "wrong"} and basis_spec is not None:
+            raise ValueError("Native endpoint conditions must not load a projection basis.")
+
+        from experiments.asre_diagnosis.salvage_b_v2.native_runtime import (
+            run_native_condition,
+        )
+
+        native_kwargs = dict(infer_kwargs)
+        current_input_image = native_kwargs.pop("input_image")
+        native_kwargs["num_video_frames"] = _get_num_video_frames(cfg)
+        result = run_native_condition(
+            model=model,
+            condition=condition,
+            current_input_image=current_input_image,
+            donor_input_image=replacement_input_image,
+            infer_kwargs=native_kwargs,
+            bases_by_layer=None
+            if basis_spec is None
+            else basis_spec.bases_by_layer,
+        )
+        return result.prediction["action"], None
+
     infer_method = model.infer_joint if visualize_future_video else model.infer_action
     call_kwargs = dict(infer_kwargs)
     if diagnosis_enabled:

@@ -23,6 +23,7 @@ ROUND4B_PROTOCOL = "round4b_low_rank_feature_subspace"
 ROUND4C_PROTOCOL = "round4c_energy_controlled_action_sufficiency"
 SALVAGE_A_PROTOCOL = "salvage_a_action_sensitive_subspace"
 SALVAGE_B_PROTOCOL = "salvage_b_world_action_functional_dissociation"
+SALVAGE_B_V2_PROTOCOL = "salvage_b_v2_native_shared_node_functional_dissociation"
 
 
 @dataclass(frozen=True)
@@ -108,6 +109,31 @@ def build_round2_conditions(num_layers: int) -> list[DiagnosisCondition]:
             disabled_video_layers=enabled_to_disabled_layers(enabled, num_layers),
         )
         for name, enabled in enabled_schedules
+    ]
+
+
+def build_salvage_b_v2_conditions(num_layers: int) -> list[DiagnosisCondition]:
+    """Build the four frozen native shared-node conditions."""
+    if num_layers != 30:
+        raise ValueError("Salvage-B v2 is registered for exactly 30 MoT layers.")
+    late = tuple(range(15, 30))
+    return [
+        Round4BCondition("current", ()),
+        Round4BCondition("wrong", (), replacement_video_layers=late),
+        Round4BCondition(
+            "svd_r97",
+            (),
+            replacement_video_layers=late,
+            basis_kind="svd",
+            subspace_rank=97,
+        ),
+        Round4BCondition(
+            "svd_r170",
+            (),
+            replacement_video_layers=late,
+            basis_kind="svd",
+            subspace_rank=170,
+        ),
     ]
 
 
@@ -416,13 +442,15 @@ def resolve_condition(diagnosis_cfg: Mapping[str, Any], num_layers: int) -> Diag
         ROUND4B_PROTOCOL,
         ROUND4C_PROTOCOL,
         SALVAGE_A_PROTOCOL,
+        SALVAGE_B_V2_PROTOCOL,
     }:
         raise ValueError(
             f"Unsupported ASRE_DIAGNOSIS.protocol={protocol!r}; expected "
             f"one of {ROUND1_PROTOCOL!r}, {ROUND2_PROTOCOL!r}, or "
             f"{ROUND3A_PROTOCOL!r}, {ROUND3B_PROTOCOL!r}, {G0_PROTOCOL!r}, "
             f"or {ROUND4A_PROTOCOL!r}, {ROUND4B_PROTOCOL!r}, "
-            f"{ROUND4C_PROTOCOL!r}, {SALVAGE_A_PROTOCOL!r}."
+            f"{ROUND4C_PROTOCOL!r}, {SALVAGE_A_PROTOCOL!r}, "
+            f"{SALVAGE_B_V2_PROTOCOL!r}."
         )
 
     replacement_protocols = {
@@ -432,6 +460,7 @@ def resolve_condition(diagnosis_cfg: Mapping[str, Any], num_layers: int) -> Diag
         ROUND4B_PROTOCOL,
         ROUND4C_PROTOCOL,
         SALVAGE_A_PROTOCOL,
+        SALVAGE_B_V2_PROTOCOL,
     }
     if protocol in replacement_protocols and mode != "replace_video_kv":
         raise ValueError(
@@ -452,6 +481,7 @@ def resolve_condition(diagnosis_cfg: Mapping[str, Any], num_layers: int) -> Diag
         ROUND4B_PROTOCOL,
         ROUND4C_PROTOCOL,
         SALVAGE_A_PROTOCOL,
+        SALVAGE_B_V2_PROTOCOL,
     }:
         is_round2 = protocol == ROUND2_PROTOCOL
         is_round3a = protocol == ROUND3A_PROTOCOL
@@ -460,6 +490,7 @@ def resolve_condition(diagnosis_cfg: Mapping[str, Any], num_layers: int) -> Diag
         is_round4b = protocol == ROUND4B_PROTOCOL
         is_round4c = protocol == ROUND4C_PROTOCOL
         is_salvage_a = protocol == SALVAGE_A_PROTOCOL
+        is_salvage_b_v2 = protocol == SALVAGE_B_V2_PROTOCOL
         round_label = (
             "Round-2"
             if is_round2
@@ -475,6 +506,8 @@ def resolve_condition(diagnosis_cfg: Mapping[str, Any], num_layers: int) -> Diag
             if is_round4c
             else "Salvage-A"
             if is_salvage_a
+            else "Salvage-B-v2"
+            if is_salvage_b_v2
             else "G0"
         )
         conditions = (
@@ -492,6 +525,8 @@ def resolve_condition(diagnosis_cfg: Mapping[str, Any], num_layers: int) -> Diag
             if is_round4c
             else build_salvage_a_conditions(num_layers)
             if is_salvage_a
+            else build_salvage_b_v2_conditions(num_layers)
+            if is_salvage_b_v2
             else build_g0_conditions(num_layers)
         )
         condition_index = diagnosis_cfg.get("condition_index")
@@ -554,7 +589,7 @@ def resolve_condition(diagnosis_cfg: Mapping[str, Any], num_layers: int) -> Diag
                     f"Configured hybrid_mask_seed={configured_seed!r} disagrees with "
                     f"{selected.name}: {selected.mask_seed!r}."
                 )
-        if is_round4b or is_round4c or is_salvage_a:
+        if is_round4b or is_round4c or is_salvage_a or is_salvage_b_v2:
             assert isinstance(selected, Round4BCondition)
             configured_kind = diagnosis_cfg.get("subspace_basis_kind")
             if configured_kind in {"", "none", "null"}:

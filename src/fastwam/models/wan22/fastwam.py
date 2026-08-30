@@ -11,7 +11,7 @@ from fastwam.utils.logging_config import get_logger
 
 from .action_dit import ActionDiT
 from .helpers.loader import load_wan22_ti2v_5b_components
-from .mot import MoT
+from .mot import MoT, NativePrefixKVHook
 from .schedulers.scheduler_continuous import WanContinuousFlowMatchScheduler
 from .video_cache_replacement import (
     action_visible_video_token_indices,
@@ -501,6 +501,7 @@ class FastWAM(torch.nn.Module):
         attention_mask: torch.Tensor,
         fuse_vae_embedding_in_latents: bool,
         action_condition: Optional[torch.Tensor] = None,
+        native_prefix_kv_hook: Optional[NativePrefixKVHook] = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run the tensor-only video/action core shared by training and inference."""
         (
@@ -547,6 +548,8 @@ class FastWAM(torch.nn.Module):
             action_context=context_action,
             action_context_mask=context_mask_action,
             attention_mask=attention_mask,
+            video_prefix_seq_len=int(_tokens_per_frame),
+            native_prefix_kv_hook=native_prefix_kv_hook,
         )
         return (
             self.video_expert.post(video_tokens, t_video, f_video, h_video, w_video),
@@ -825,6 +828,10 @@ class FastWAM(torch.nn.Module):
         tiled: bool = False,
         test_action_with_infer_action: bool = True,
         compile_action_infer: bool = False,
+        native_prefix_kv_hook: Optional[NativePrefixKVHook] = None,
+        decode_video: bool = True,
+        initial_video_noise: Optional[torch.Tensor] = None,
+        initial_action_noise: Optional[torch.Tensor] = None,
     ) -> dict[str, Any]:
         self.eval()
         if test_action_with_infer_action:
@@ -889,18 +896,60 @@ class FastWAM(torch.nn.Module):
 
         video_generator = None if seed is None else torch.Generator(device=rand_device).manual_seed(seed)
         action_generator = None if seed is None else torch.Generator(device=rand_device).manual_seed(seed)
-        latents_video = torch.randn(
-            (1, self.vae.model.z_dim, latent_t, latent_h, latent_w),
-            generator=video_generator,
-            device=rand_device,
-            dtype=torch.float32,
-        ).to(device=self.device, dtype=self.torch_dtype)
-        latents_action = torch.randn(
-            (1, action_horizon, self.action_expert.action_dim),
-            generator=action_generator,
-            device=rand_device,
-            dtype=torch.float32,
-        ).to(device=self.device, dtype=self.torch_dtype)
+        full_video_shape = (1, self.vae.model.z_dim, latent_t, latent_h, latent_w)
+        future_video_shape = (
+            1,
+            self.vae.model.z_dim,
+            latent_t - 1,
+            latent_h,
+            latent_w,
+        )
+        if initial_video_noise is None:
+            latents_video = torch.randn(
+                full_video_shape,
+                generator=video_generator,
+                device=rand_device,
+                dtype=torch.float32,
+            )
+        else:
+            supplied_video_noise = initial_video_noise.detach().to(
+                device=rand_device, dtype=torch.float32
+            )
+            if supplied_video_noise.ndim == 4:
+                supplied_video_noise = supplied_video_noise.unsqueeze(0)
+            if tuple(supplied_video_noise.shape) == future_video_shape:
+                latents_video = torch.zeros(full_video_shape, dtype=torch.float32, device=rand_device)
+                latents_video[:, :, 1:] = supplied_video_noise
+            elif tuple(supplied_video_noise.shape) == full_video_shape:
+                latents_video = supplied_video_noise.clone()
+            else:
+                raise ValueError(
+                    "`initial_video_noise` must match the full or future-only latent "
+                    f"shape; got {tuple(supplied_video_noise.shape)}, expected "
+                    f"{full_video_shape} or {future_video_shape}."
+                )
+        latents_video = latents_video.to(device=self.device, dtype=self.torch_dtype)
+        action_shape = (1, action_horizon, self.action_expert.action_dim)
+        if initial_action_noise is None:
+            latents_action = torch.randn(
+                action_shape,
+                generator=action_generator,
+                device=rand_device,
+                dtype=torch.float32,
+            )
+        else:
+            supplied_action_noise = initial_action_noise.detach().to(
+                device=rand_device, dtype=torch.float32
+            )
+            if supplied_action_noise.ndim == 2:
+                supplied_action_noise = supplied_action_noise.unsqueeze(0)
+            if tuple(supplied_action_noise.shape) != action_shape:
+                raise ValueError(
+                    "`initial_action_noise` shape mismatch: "
+                    f"{tuple(supplied_action_noise.shape)} != {action_shape}."
+                )
+            latents_action = supplied_action_noise.clone()
+        latents_action = latents_action.to(device=self.device, dtype=self.torch_dtype)
 
         input_image = input_image.to(device=self.device, dtype=self.torch_dtype)
         first_frame_latents = self._encode_input_image_latents_tensor(input_image=input_image, tiled=tiled)
@@ -945,6 +994,10 @@ class FastWAM(torch.nn.Module):
             device=self.device,
         )
         if compile_action_infer:
+            if native_prefix_kv_hook is not None:
+                raise ValueError(
+                    "Native prefix-K/V interventions do not support compiled inference."
+                )
             if action is not None:
                 raise ValueError(
                     "`compile_action_infer=True` does not support action conditioning in `infer_joint`."
@@ -992,6 +1045,7 @@ class FastWAM(torch.nn.Module):
                 attention_mask=joint_attention_mask,
                 fuse_vae_embedding_in_latents=fuse_flag,
                 action_condition=action,
+                native_prefix_kv_hook=native_prefix_kv_hook,
             )
             pred_video = pred_video_posi
             pred_action = pred_action_posi
@@ -1009,7 +1063,10 @@ class FastWAM(torch.nn.Module):
                 )
 
         return {
-            "video": self._decode_latents(latents_video, tiled=tiled),
+            "video": self._decode_latents(latents_video, tiled=tiled)
+            if decode_video
+            else None,
+            "video_latents": latents_video.detach(),
             "action": action_out,
         }
 

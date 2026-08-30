@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, Optional
+from typing import Callable, Dict, Optional
 
 import torch
 import torch.nn as nn
@@ -9,6 +9,12 @@ from .wan_video_dit import flash_attention, modulate, rope_apply
 from fastwam.utils.logging_config import get_logger
 
 logger = get_logger(__name__)
+
+
+NativePrefixKVHook = Callable[
+    [int, torch.Tensor, torch.Tensor, int],
+    tuple[torch.Tensor, torch.Tensor],
+]
 
 
 class MoT(nn.Module):
@@ -763,6 +769,7 @@ class MoT(nn.Module):
 
     def _forward_joint_layer(
         self,
+        layer_idx: int,
         video_block: nn.Module,
         action_block: nn.Module,
         video_tokens: torch.Tensor,
@@ -776,7 +783,16 @@ class MoT(nn.Module):
         action_context: torch.Tensor,
         action_context_mask: torch.Tensor,
         attention_mask: torch.Tensor,
+        video_prefix_seq_len: Optional[int] = None,
+        native_prefix_kv_hook: Optional[NativePrefixKVHook] = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        if video_prefix_seq_len is None:
+            if native_prefix_kv_hook is not None:
+                raise ValueError(
+                    "`video_prefix_seq_len` is required when a native prefix-K/V "
+                    "hook is installed."
+                )
+            video_prefix_seq_len = int(video_tokens.shape[1])
         video_expert = self.mixtures["video"]
         action_expert = self.mixtures["action"]
         (
@@ -813,6 +829,20 @@ class MoT(nn.Module):
             freqs=action_freqs,
             t_mod=action_t_mod,
         )
+        if native_prefix_kv_hook is not None:
+            k_video, v_video = native_prefix_kv_hook(
+                layer_idx,
+                k_video,
+                v_video,
+                video_prefix_seq_len,
+            )
+            if k_video.shape != q_video.shape or v_video.shape != q_video.shape:
+                raise ValueError(
+                    "A native prefix-K/V hook must preserve the complete video K/V "
+                    "shape; expected "
+                    f"{tuple(q_video.shape)}, got K={tuple(k_video.shape)} and "
+                    f"V={tuple(v_video.shape)} at layer {layer_idx}."
+                )
         mixed = flash_attention(
             q=torch.cat([q_video, q_action], dim=1),
             k=torch.cat([k_video, k_action], dim=1),
@@ -859,8 +889,22 @@ class MoT(nn.Module):
         action_context: torch.Tensor,
         action_context_mask: torch.Tensor,
         attention_mask: torch.Tensor,
+        video_prefix_seq_len: Optional[int] = None,
+        native_prefix_kv_hook: Optional[NativePrefixKVHook] = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        if self.training and self.compile_training_layers and not hasattr(self, "_compiled_joint_layer"):
+        if video_prefix_seq_len is None:
+            if native_prefix_kv_hook is not None:
+                raise ValueError(
+                    "`video_prefix_seq_len` is required when a native prefix-K/V "
+                    "hook is installed."
+                )
+            video_prefix_seq_len = int(video_tokens.shape[1])
+        if (
+            native_prefix_kv_hook is None
+            and self.training
+            and self.compile_training_layers
+            and not hasattr(self, "_compiled_joint_layer")
+        ):
             self._compiled_joint_layer = torch.compile(
                 self._forward_joint_layer,
                 fullgraph=True,
@@ -871,10 +915,15 @@ class MoT(nn.Module):
         for layer_idx in range(self.num_layers):
             layer = (
                 self._compiled_joint_layer
-                if self.training and self.compile_training_layers
+                if (
+                    native_prefix_kv_hook is None
+                    and self.training
+                    and self.compile_training_layers
+                )
                 else self._forward_joint_layer
             )
             x_video, x_action = layer(
+                layer_idx=layer_idx,
                 video_block=self.mixtures["video"].blocks[layer_idx],
                 action_block=self.mixtures["action"].blocks[layer_idx],
                 video_tokens=x_video,
@@ -888,6 +937,8 @@ class MoT(nn.Module):
                 action_context=action_context,
                 action_context_mask=action_context_mask,
                 attention_mask=attention_mask,
+                video_prefix_seq_len=video_prefix_seq_len,
+                native_prefix_kv_hook=native_prefix_kv_hook,
             )
         return x_video, x_action
 
