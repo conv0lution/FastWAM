@@ -1,0 +1,150 @@
+{
+  "freeze_name": "MINIBENCH_TASK_FREEZE_V0_3_5",
+  "version": "V0.3.5",
+  "frozen_at": "2026-09-03T13:57:06+08:00",
+  "git_commit": "6a960b3b40c8c14fc2a6b4337153837a2acbf482",
+  "supersedes": "MINIBENCH_TASK_FREEZE_V0_3_4",
+  "parent_manifest": "experiments/robotwin/MINIBENCH_TASK_FREEZE_V0_3_4.json",
+  "parent_manifest_sha256": "973dc3af98c3df700184b555f826f4707c5b024ab862ee40170a0fe0443743cf",
+  "policy_evaluation_started": false,
+  "benchmark_selection_basis": "simulator-only validity; no FastWAM inference has been run on any move_block_reveal_can version",
+  "bug_classification": "pre-policy scripted-expert instrumentation correction only; scene geometry, sampling, conditions, seeds, horizon, camera, instruction, visibility, success, and difficulty are unchanged from V0.3/V0.3.4",
+  "reason": "V0.3.4 reset passed all three-condition paired-state, visibility, stability, and screenshot assertions, but Missing scripted expert was rejected by two instrumentation defects. First, RoboTwin check_actors_contact treated PhysX contact-offset proximity pairs as collisions: 998 sampled points all had positive 0.0161690 to 0.0199996 m separation and exactly zero impulse while the can moved at most 8.996e-7 m and rotated at most 2.061e-4 rad. V0.3.5 keeps raw pair diagnostics but defines physically meaningful expert interference as signed separation <= 0 or applied impulse > 0, with the independent can pose guards unchanged. Second, the executed AABB clearance missed the existing tolerance boundary by 5.268e-6 m; V0.3.5 adds a fixed 0.005 m scripted lift command buffer while retaining the same required clearance and validation tolerance. No scene or evaluation definition changed, and no FastWAM result was available.",
+  "source_of_truth_robotwin": "/home/zhaizicheng/Reasoning/FastWAM/third_party/RoboTwin",
+  "asset_donor_only": "/local_home/zhaizicheng/fastwam_robotwin/RoboTwin/assets",
+  "task": "move_block_reveal_can",
+  "instruction": "Put the can into the basket.",
+  "unchanged_scene_configuration": {
+    "can_sampling": {
+      "left_x_m": [-0.25, -0.2],
+      "right_x_m": [0.2, 0.25],
+      "y_m": [0.0, 0.1],
+      "model_ids": [0, 1, 2, 3, 5, 6]
+    },
+    "basket_sampling": {
+      "left_arm_case_x_m": [0.02, 0.02],
+      "right_arm_case_x_m": [-0.02, -0.02],
+      "y_m": [-0.08, -0.05],
+      "model_ids": [0, 1]
+    },
+    "occluder": {
+      "implementation": "one dynamic rigid actor with procedural opaque body and grasp cap, matching visual/collision geometry",
+      "opaque_body_half_size_m": [0.055, 0.025, 0.09],
+      "grasp_cap_half_size_m": [0.03, 0.03, 0.025],
+      "grasp_cap_center_z_m": 0.115,
+      "compound_local_aabb_min_m": [-0.055, -0.03, -0.09],
+      "compound_local_aabb_max_m": [0.055, 0.03, 0.14],
+      "overall_axis_aligned_full_size_m": [0.11, 0.06, 0.23],
+      "mass_kg": 0.04,
+      "color_rgb": [0.12, 0.35, 0.85],
+      "occluding_pose_rule": "[can_x, can_y - 0.080, table_top + 0.090], identity quaternion",
+      "revealed_pose_rule": "[sign(can_x) * 0.300, 0.250, table_top + 0.090], identity quaternion"
+    },
+    "conditions": {
+      "shared_base": "all conditions construct and settle the block at occluding_pose through the same fixed-seed path",
+      "visible": "before first policy observation, move only block to revealed_pose, zero block velocity, then advance five physics steps",
+      "missing": "leave block at occluding_pose and advance the same five physics steps; no intervention",
+      "oracle_reveal": "start exactly as missing, then apply the exact visible block-only intervention before first policy observation"
+    },
+    "visibility": {
+      "detector": "SAPIEN per-actor instance segmentation",
+      "missing": "can pixels equal zero independently in head, left wrist, and right wrist",
+      "visible_and_oracle": "at least one policy camera contains at least 32 can pixels",
+      "basket": "at least 32 head-camera pixels",
+      "block": "at least 32 pixels in at least one policy camera"
+    },
+    "success": "can full projected AABB is laterally inside basket bounds; can center is vertically in the conservative placement range; basket upright; can contacts basket; can-side gripper open; can contacts neither gripper; can/basket relative motion remains under thresholds for 25 actual physics steps; block ignored; check_success is pure",
+    "success_thresholds": {
+      "lateral_margin_m": 0.002,
+      "vertical_tolerance_m": 0.002,
+      "relative_linear_speed_mps": 0.05,
+      "relative_angular_speed_radps": 1.0,
+      "consecutive_actual_physics_steps": 25
+    },
+    "paired_state_absolute_tolerance": 0.0001,
+    "episode_horizon": 1000,
+    "task_config": "demo_clean",
+    "paired_pilot_seeds": [4300000, 4300001, 4300002]
+  },
+  "scripted_expert_v0_3_5": {
+    "visible_and_oracle": "direct native-style can grasp, functional-point transfer, release, retreat, persistent settle",
+    "missing": "grasp cap; AABB-derived lift plus fixed execution buffer; outward-X then rearward-Y transfer; release/settle; identical can sequence",
+    "required_vertical_clearance_m": 0.05,
+    "clearance_validation_tolerance_m": 0.002,
+    "lift_command_buffer_m": 0.005,
+    "meaningful_contact_separation_threshold_m": 0.0,
+    "meaningful_contact_impulse_threshold_ns": 0.0,
+    "max_can_translation_during_reveal_m": 0.005,
+    "max_can_rotation_during_reveal_deg": 3.0,
+    "raw_physx_pair_is_diagnostic_only": true,
+    "max_attempts_per_fixed_seed_condition": 3,
+    "minimum_same_seed_state_reconstructions": 2,
+    "seed_substitution": false
+  },
+  "evaluation_plan_frozen_before_fastwam": {
+    "native_downstream_calibration": {
+      "task": "place_can_basket",
+      "seeds": [100000, 100001, 100002, 100003, 100004],
+      "episodes": 5,
+      "admission_threshold": 0.8
+    },
+    "exact_block_reveal_calibration": {
+      "task": "move_block_reveal_can_block_calibration",
+      "instruction": "Move the block aside to reveal the can.",
+      "seeds": [200000, 200001, 200002, 200003, 200004],
+      "episodes": 5,
+      "admission_threshold": 0.7,
+      "success": "same frozen Missing scene and exact block; block translated >=0.08 m, can visible at current block pose, block released and not in meaningful contact with can, block stable for 25 actual physics steps; can placement not scored"
+    },
+    "admission_rule": "after all simulator audits and runtime freeze pass, run both frozen calibrations once; run paired pilot only if both thresholds pass; never alter task geometry from policy observations",
+    "pilot_episodes_per_condition": 3
+  },
+  "gpu_protocol": {
+    "default_simulator_physical_gpu": 6,
+    "default_policy_physical_gpu": 7,
+    "allowed_physical_indices": [4, 5, 6, 7],
+    "guard": "before every launch save full nvidia-smi, compute-app, and pmon evidence; refuse a target GPU with any non-Xorg process/context",
+    "isolation": "SAPIEN pinned by physical PCI; CUDA pinned by UUID; bubblewrap exposes only selected NVIDIA/DRI nodes",
+    "fastwam_device": "cuda:1 inside ordered [simulator UUID, policy UUID] CUDA_VISIBLE_DEVICES",
+    "cpu_fallback": false
+  },
+  "v0_3_4_evidence": {
+    "formal_run_root": "/home/zhaizicheng/Reasoning/FastWAM/asre_results/move_block_reveal_can/formal_frozen_v0_3_4_20260903_133037",
+    "reset": "passed all assertions; 234 screenshots saved",
+    "main_scripted_expert": "6/9 condition cells had witnesses; all Visible and Oracle passed; all Missing attempts were rejected by the two diagnosed instrumentation defects",
+    "fastwam": "not_run",
+    "contact_diagnostic": "/tmp/diagnose_v034_contact.json"
+  },
+  "pre_policy_validation_required": {
+    "reset": "all paired-state, visibility, stability, contact, success-purity, screenshot-count, and screenshot-hash assertions pass",
+    "main_scripted_expert": "all 3 seeds x 3 conditions have a complete fixed-seed witness and repeatable state",
+    "calibration_scripted_expert": "all five native downstream and all five exact reveal seeds have a fixed-seed witness",
+    "formal_runtime_freeze": "hash sources/configs/assets/screenshots/audits/diff/status/seeds/model inputs/reproduction script before first FastWAM load"
+  },
+  "frozen_sha256": {
+    "task_source": "fc32032081226708b174443f21b5aa6887991c3f4275b7d91672b275e2ee318e",
+    "block_calibration_source": "46710ccc3c843e03b6852e2df548b5378198a259dbe16a5e491dc0adb89cb2f9",
+    "base_task_source": "81bb9e1f75b8144911b5a845623137372d2c0a1bc936008494b98242fb75a46c",
+    "simulator_test": "35cdb78e93cd0c1bdf037272f8c3e3bf641816dd8e56bb0bb5adc7fa5fe0be55",
+    "eval_policy": "47e519a30bd5a79213437829233cb4e9019237c5e20d9635613fc4615dc227ed",
+    "render_preflight": "f8eecaf5b05e43d132ae3a48a702eee9ab5d46839a0cdbb66ab9cba620c6519d",
+    "fastwam_entrypoint": "af4db8fafc061c99b17951ecbbd7c25fcb309e71799cffca60197423b21061d4",
+    "fastwam_adapter": "240d8f41e541e35f406b3d9fc865910f9e9759ab846c4c12e53954118b41d2ce",
+    "reproduction_script": "e8192dfea752e12b8a18e62069144d00e8a4d27154d21956626dd4e9e4c11bf8",
+    "summarizer": "0ce34399c29a489d13581014d95e61687bdb1f77e731cbe1935c6d4e4b9477eb",
+    "paired_seed_manifest": "ef4f8650c4bd5f25943903bedfde04676176937d3fe4b161ce5597ad71f6e39d",
+    "place_can_calibration_seed_manifest": "a63134878598c7a6968b28499a26b1773637060d5a950d8de900171e537ef51f",
+    "exact_block_calibration_seed_manifest": "9f3ae3f854cdd9834b7dfe65caba6c49c3f3e6caf741d7392ba592254e043893",
+    "fastwam_config": "6095648a779f89d6cb3eb1ea24f2e17b0a2876f035b358020425f835a4bd88d5",
+    "step_limit_config": "cad033859130a3c8eb49397f0597deb2f87aea389738082383a616e2bc75a82a",
+    "main_instruction": "1efc71874d579c9e31d4ab88c06b58d54ef3a50bf5bd10277d6fbb5a395716fe",
+    "block_calibration_instruction": "e991883062c9386bfe3a05020f8573ad63e1fa00c69c9bf42f02ae9e6ce62273"
+  },
+  "validation_status_at_project_prefreeze": {
+    "v0_3_5_reset": "not_run",
+    "v0_3_5_main_scripted_expert": "not_run",
+    "v0_3_5_calibration_scripted_expert": "not_run",
+    "v0_3_5_formal_runtime_freeze": "not_run",
+    "fastwam": "not_run"
+  }
+}

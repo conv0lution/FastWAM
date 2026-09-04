@@ -1,0 +1,156 @@
+{
+  "freeze_name": "MINIBENCH_TASK_FREEZE_V0_3_4",
+  "version": "V0.3.4",
+  "frozen_at": "2026-09-03T13:28:50+08:00",
+  "git_commit": "6a960b3b40c8c14fc2a6b4337153837a2acbf482",
+  "supersedes": "MINIBENCH_TASK_FREEZE_V0_3_3",
+  "parent_manifest": "experiments/robotwin/MINIBENCH_TASK_FREEZE_V0_3_3.json",
+  "parent_manifest_sha256": "7001a52b888164440292ff384e40289adc1a1f4e70a2ab8b88c2c7f2ad850f88",
+  "policy_evaluation_started": false,
+  "benchmark_selection_basis": "simulator-only validity; no FastWAM inference has been run on any move_block_reveal_can version",
+  "bug_classification": "freeze-before-policy engineering corrections only; scene geometry, sampling, conditions, seeds, horizon, camera, instruction, and difficulty are unchanged from V0.3",
+  "reason": "V0.3.4 corrects pre-policy instrumentation and certification defects found in V0.3.3: check_success is now a pure persistent query advanced only by real physics steps; the expert reveal uses the compound block's full world AABB and fails on any transient can translation, rotation, block contact, or gripper contact; the expert downstream removes the regressive extra lift; a same-scene exact block-reveal calibration replaces the confounded handover proxy; reset screenshots, calibration experts, admission, video finalization, source/asset hashes, CUDA binding, and GPU isolation fail closed. No geometry or condition was selected using FastWAM performance.",
+  "unchanged_scene_configuration": [
+    "native can and basket assets, model/pose sampling, masses, and arm choice",
+    "opaque body and grasp-cap dimensions, relative pose, mass, color, and contact candidates",
+    "occluding and revealed pose rules",
+    "visible, missing, and oracle_reveal definitions and five equal handoff physics steps",
+    "camera configuration, visibility detector, and visibility thresholds",
+    "instruction, demo_clean task config, 1000-step horizon, and all fixed seed values"
+  ],
+  "source_of_truth_robotwin": "/home/zhaizicheng/Reasoning/FastWAM/third_party/RoboTwin",
+  "asset_donor_only": "/local_home/zhaizicheng/fastwam_robotwin/RoboTwin/assets",
+  "task": "move_block_reveal_can",
+  "instruction": "Put the can into the basket.",
+  "task_configuration": {
+    "can_sampling": {
+      "left_x_m": [-0.25, -0.2],
+      "right_x_m": [0.2, 0.25],
+      "y_m": [0.0, 0.1],
+      "model_ids": [0, 1, 2, 3, 5, 6]
+    },
+    "basket_sampling": {
+      "left_arm_case_x_m": [0.02, 0.02],
+      "right_arm_case_x_m": [-0.02, -0.02],
+      "y_m": [-0.08, -0.05],
+      "model_ids": [0, 1]
+    },
+    "occluder": {
+      "implementation": "one dynamic rigid actor with procedural opaque body and grasp cap, each with matching visual and collision geometry",
+      "opaque_body_half_size_m": [0.055, 0.025, 0.09],
+      "opaque_body_full_size_m": [0.11, 0.05, 0.18],
+      "grasp_cap_half_size_m": [0.03, 0.03, 0.025],
+      "grasp_cap_full_size_m": [0.06, 0.06, 0.05],
+      "grasp_cap_center_z_m": 0.115,
+      "compound_local_aabb_min_m": [-0.055, -0.03, -0.09],
+      "compound_local_aabb_max_m": [0.055, 0.03, 0.14],
+      "overall_axis_aligned_full_size_m": [0.11, 0.06, 0.23],
+      "mass_kg": 0.04,
+      "color_rgb": [0.12, 0.35, 0.85],
+      "occluding_pose_rule": "[can_x, can_y - 0.080, table_top + 0.090], identity quaternion",
+      "revealed_pose_rule": "[sign(can_x) * 0.300, 0.250, table_top + 0.090], identity quaternion"
+    },
+    "conditions": {
+      "shared_base": "all conditions construct and settle the block at occluding_pose through the same fixed-seed path",
+      "visible": "before the first policy observation, move only the block to revealed_pose, zero block velocity, then advance five physics steps",
+      "missing": "leave the block at occluding_pose and advance the same five physics steps; no intervention",
+      "oracle_reveal": "start exactly as missing, then apply the exact visible block-only intervention before the first policy observation"
+    },
+    "paired_state_absolute_tolerance": 0.0001,
+    "visibility": {
+      "detector": "SAPIEN per-actor instance segmentation",
+      "missing": "can pixel count equals zero independently in head, left wrist, and right wrist",
+      "visible_and_oracle": "at least one policy camera contains at least 32 can pixels",
+      "basket": "at least 32 head-camera pixels",
+      "block": "at least 32 pixels in at least one policy camera"
+    },
+    "success": "the can projected full AABB is laterally contained by the basket metadata bounds; can center is vertically within the conservative basket placement range; basket is upright; can contacts basket; can-side gripper is open; can contacts neither gripper; relative can/basket linear and angular speeds are below fixed thresholds for 25 actual physics steps; block state is ignored; check_success is side-effect free",
+    "success_thresholds": {
+      "lateral_margin_m": 0.002,
+      "vertical_tolerance_m": 0.002,
+      "relative_linear_speed_mps": 0.05,
+      "relative_angular_speed_radps": 1.0,
+      "consecutive_actual_physics_steps": 25
+    },
+    "scripted_expert": {
+      "visible": "direct native-style can grasp, functional-point transfer, release, retreat, and persistent settle",
+      "missing": "grasp block cap; establish 0.05 m full-world-AABB vertical clearance over the can; translate outward in X then rearward in Y; release and settle; then run the identical can sequence",
+      "oracle_reveal": "environment block-only intervention, then the identical direct can sequence",
+      "max_can_translation_during_reveal_m": 0.005,
+      "max_can_rotation_during_reveal_deg": 3.0,
+      "forbidden_during_reveal": [
+        "block-can contact at any controlled physics step",
+        "either gripper contacting the can at any controlled physics step"
+      ],
+      "max_attempts_per_fixed_seed_condition": 3,
+      "minimum_same_seed_state_reconstructions": 2,
+      "fresh_scene_each_attempt": true,
+      "seed_substitution": false,
+      "task_parameter_changes_between_attempts": false
+    },
+    "episode_horizon": 1000,
+    "task_config": "demo_clean",
+    "paired_pilot_seeds": [4300000, 4300001, 4300002]
+  },
+  "evaluation_plan_frozen_before_fastwam": {
+    "native_downstream_calibration": {
+      "task": "place_can_basket",
+      "task_config": "demo_clean",
+      "seeds": [100000, 100001, 100002, 100003, 100004],
+      "episodes": 5,
+      "admission_threshold": 0.8
+    },
+    "exact_block_reveal_calibration": {
+      "task": "move_block_reveal_can_block_calibration",
+      "instruction": "Move the block aside to reveal the can.",
+      "task_config": "demo_clean",
+      "seeds": [200000, 200001, 200002, 200003, 200004],
+      "episodes": 5,
+      "admission_threshold": 0.7,
+      "success": "same frozen Missing scene and exact compound block; block translated at least 0.08 m, can is visibly revealed at the current block pose, block is released and not contacting can, and block motion is stable for 25 actual physics steps; downstream can placement is not scored"
+    },
+    "admission_rule": "after simulator reset, main expert, calibration expert, and formal freeze pass, run both calibrations exactly once; run the paired three-condition pilot only if both thresholds pass; never alter the frozen task from policy observations",
+    "pilot_episodes_per_condition": 3
+  },
+  "gpu_protocol": {
+    "default_simulator_physical_gpu": 6,
+    "default_policy_physical_gpu": 7,
+    "allowed_physical_indices": [4, 5, 6, 7],
+    "guard": "before every launch save full nvidia-smi, compute-app, and pmon evidence; refuse any target GPU containing a non-Xorg process/context",
+    "isolation": "SAPIEN by the simulator GPU PCI address; CUDA by ordered GPU UUIDs; bubblewrap exposes only the selected NVIDIA and matching DRI device nodes",
+    "fastwam_device": "cuda:1 inside [simulator UUID, policy UUID] CUDA_VISIBLE_DEVICES",
+    "cpu_fallback": false
+  },
+  "pre_policy_validation_required": {
+    "reset": "all paired-state, visibility, stability, contact, success-purity, screenshot count, and screenshot hash assertions pass",
+    "main_scripted_expert": "all 3 seeds x 3 conditions have a complete fixed-seed witness and repeatable pre/handoff state",
+    "calibration_scripted_expert": "all five native downstream seeds and all five exact reveal seeds have a valid fixed-seed witness",
+    "formal_runtime_freeze": "hash all simulator sources/configs, required runtime assets, screenshots, audits, git diff/status, seed manifests, model inputs, and reproduction script before first FastWAM load"
+  },
+  "frozen_sha256": {
+    "task_source": "bb9c488bbf5ceea33984eba2552e19dd9733c352dbcc39278cc6c4086d508c7d",
+    "block_calibration_source": "4a0b25a988c03ddfd3f44db61166433a1bd6fda20371556fa5381a45969d2bfb",
+    "base_task_source": "81bb9e1f75b8144911b5a845623137372d2c0a1bc936008494b98242fb75a46c",
+    "simulator_test": "6f5f41a8a314a08db6ceb9c35cf302e7625115a3b0595e9bceb550e1604d27a5",
+    "eval_policy": "47e519a30bd5a79213437829233cb4e9019237c5e20d9635613fc4615dc227ed",
+    "render_preflight": "f8eecaf5b05e43d132ae3a48a702eee9ab5d46839a0cdbb66ab9cba620c6519d",
+    "fastwam_entrypoint": "af4db8fafc061c99b17951ecbbd7c25fcb309e71799cffca60197423b21061d4",
+    "fastwam_adapter": "240d8f41e541e35f406b3d9fc865910f9e9759ab846c4c12e53954118b41d2ce",
+    "reproduction_script": "be7dea9b6432390eed07f6cd1b62635d92b3f62e9bc718e7ec7232b3f2d652a2",
+    "summarizer": "621d8f9db3fb3c049686b4196d70153cc5469b347e7ac32edfab7df290d71c79",
+    "paired_seed_manifest": "ef4f8650c4bd5f25943903bedfde04676176937d3fe4b161ce5597ad71f6e39d",
+    "place_can_calibration_seed_manifest": "a63134878598c7a6968b28499a26b1773637060d5a950d8de900171e537ef51f",
+    "exact_block_calibration_seed_manifest": "9f3ae3f854cdd9834b7dfe65caba6c49c3f3e6caf741d7392ba592254e043893",
+    "fastwam_config": "6095648a779f89d6cb3eb1ea24f2e17b0a2876f035b358020425f835a4bd88d5",
+    "step_limit_config": "cad033859130a3c8eb49397f0597deb2f87aea389738082383a616e2bc75a82a",
+    "main_instruction": "1efc71874d579c9e31d4ab88c06b58d54ef3a50bf5bd10277d6fbb5a395716fe",
+    "block_calibration_instruction": "e991883062c9386bfe3a05020f8573ad63e1fa00c69c9bf42f02ae9e6ce62273"
+  },
+  "validation_status_at_project_prefreeze": {
+    "v0_3_4_reset": "not_run",
+    "v0_3_4_main_scripted_expert": "not_run",
+    "v0_3_4_calibration_scripted_expert": "not_run",
+    "v0_3_4_formal_runtime_freeze": "not_run",
+    "fastwam": "not_run"
+  }
+}

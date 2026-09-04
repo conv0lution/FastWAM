@@ -1,0 +1,141 @@
+{
+  "freeze_name": "MINIBENCH_TASK_FREEZE_V0_3_1",
+  "version": "V0.3.1",
+  "frozen_at": "2026-09-03T11:28:26+08:00",
+  "git_commit": "6a960b3b40c8c14fc2a6b4337153837a2acbf482",
+  "supersedes": "MINIBENCH_TASK_FREEZE_V0_3",
+  "parent_manifest": "experiments/robotwin/MINIBENCH_TASK_FREEZE_V0_3.json",
+  "parent_manifest_sha256": "4e371486ee9fec09217f9129b00ba94f0fddf2d724791ca6d58e38ffb422934e",
+  "policy_evaluation_started": false,
+  "benchmark_selection_basis": "simulator-only validity; no FastWAM inference has been run on any move_block_reveal_can version",
+  "reason": "V0.3 reset never constructed a scene because it attempted to attach a second render shape after the entity had already been added to SAPIEN. V0.3.1 fixes only constructor ordering: both collision shapes and both render shapes are attached before the single entity is added to the scene. Geometry, poses, sampling, conditions, thresholds, success, seeds, horizon, GPU protocol, and policy admission plan are unchanged.",
+  "bug_classification": "confirmed simulator API/constructor implementation error; not a task-geometry or policy-performance change",
+  "constructor_change": {
+    "before": "create_box added the body entity to the scene, then code attempted to attach the cap render shape to that already-live RenderBodyComponent",
+    "after": "body and cap collision/render shapes are attached to their shared components before the single entity is added to the scene"
+  },
+  "unchanged_from_v0_3": [
+    "can and basket assets, sampling, masses, and arm choice",
+    "opaque body and grasp-cap dimensions, relative pose, mass, color, and contact candidates",
+    "occluding and revealed pose rules",
+    "visible, missing, and oracle_reveal definitions and five handoff physics steps",
+    "visibility detector and thresholds",
+    "paired-state tolerance and assertions",
+    "success predicate and stability thresholds",
+    "instruction, task config, horizon, all seed manifests, admission thresholds, and GPU protocol"
+  ],
+  "implementation_bug_evidence": {
+    "run_root": "asre_results/move_block_reveal_can/formal_frozen_v0_3_20260903_112200",
+    "error": "failed to attach visual shape: adding shape to render body that is already part of an entity is not implemented",
+    "reset_audit_sha256": "f22bb3f6429964b862994f3e9a9cf72736d696779039fdb868ca86945bfd8489",
+    "simulator_log_sha256": "21c5e1de48509940a9ed4b49839a05f6d7894500f64f3e4904efe38da1d1fb62",
+    "simulator_provenance_sha256": "4ca6fe99314e6c93dd298b9cfca57189009cfb1317eece30e9a9715ea0bf050a",
+    "fastwam_outputs_exist": false
+  },
+  "source_of_truth_robotwin": "/home/zhaizicheng/Reasoning/FastWAM/third_party/RoboTwin",
+  "asset_donor_only": "/local_home/zhaizicheng/fastwam_robotwin/RoboTwin/assets",
+  "task": "move_block_reveal_can",
+  "instruction": "Put the can into the basket.",
+  "task_configuration": {
+    "can_and_basket": "Unmodified native place_can_basket assets, model sampling, masses, pose sampling, arm selection, robot, cameras, and demo_clean environment.",
+    "occluder": {
+      "implementation": "One dynamic rigid actor; procedural opaque box body plus procedural grasp cap, each with matching visual and collision geometry.",
+      "opaque_body_half_size_m": [0.055, 0.025, 0.09],
+      "opaque_body_full_size_m": [0.11, 0.05, 0.18],
+      "grasp_cap_half_size_m": [0.03, 0.03, 0.025],
+      "grasp_cap_full_size_m": [0.06, 0.06, 0.05],
+      "grasp_cap_center_z_m": 0.115,
+      "overall_axis_aligned_full_size_m": [0.11, 0.06, 0.23],
+      "mass_kg": 0.04,
+      "color_rgb": [0.12, 0.35, 0.85],
+      "expert_contact_candidates": [0, 1, 2, 3],
+      "contact_orientations": "RoboTwin native create_box(boxtype=long) orientations, translated to the grasp-cap center.",
+      "occluding_pose_rule": "[can_x, can_y - 0.080, table_top + 0.090], identity quaternion",
+      "revealed_pose_rule": "[sign(can_x) * 0.300, 0.250, table_top + 0.090], identity quaternion"
+    },
+    "conditions": {
+      "shared_base": "All conditions construct and settle the block at occluding_pose using the same seed and code path.",
+      "visible": "Before the first policy observation, set only block root pose to revealed_pose, zero block velocities, advance five physics steps, then hand off.",
+      "missing": "Leave block at occluding_pose, advance five physics steps, then hand off with no intervention.",
+      "oracle_reveal": "Start exactly as Missing; before the first policy observation apply the exact same block-only revealed_pose/zero-velocity/five-step operation as Visible and mark oracle_applied=true."
+    },
+    "visibility": {
+      "detector": "SAPIEN actor instance segmentation in each of head, left wrist, and right wrist cameras.",
+      "missing_requirement": "can pixels == 0 separately in all three cameras",
+      "visible_and_oracle_requirement": "at least one camera has >= 32 can pixels",
+      "basket_requirement": "head camera has >= 32 basket pixels",
+      "block_requirement": "at least one camera has >= 32 block pixels"
+    },
+    "paired_state": {
+      "absolute_tolerance": 0.0001,
+      "requirements": [
+        "full pre-intervention states are equal across all conditions",
+        "Visible and Oracle full handoff states are equal",
+        "non-block handoff state is equal across Visible and Missing",
+        "block contacts no can, basket, or robot link at handoff",
+        "block is at its canonical pose, upright, and near rest at handoff"
+      ]
+    },
+    "success": "Basket upright; can center geometrically inside basket; can contacts basket; can-side gripper open; can touches neither gripper; can/basket relative linear and angular velocities remain within thresholds for 25 consecutive physics steps. Block state is ignored.",
+    "success_thresholds": {
+      "lateral_margin_m": 0.002,
+      "vertical_tolerance_m": 0.002,
+      "relative_linear_speed_mps": 0.05,
+      "relative_angular_speed_radps": 1.0,
+      "consecutive_physics_steps": 25
+    },
+    "episode_horizon": 1000,
+    "task_config": "demo_clean",
+    "paired_pilot_seeds": [4300000, 4300001, 4300002]
+  },
+  "selection_evidence": {
+    "v0_three_camera_occlusion_pass": "asre_results/move_block_reveal_can/formal_frozen_v0_20260903_101625/simulator/reset_audit.json",
+    "v0_1_ungraspable_body_diagnostic": "asre_results/move_block_reveal_can/formal_frozen_v0_1_20260903_103509/metadata/contact_diagnostic.json",
+    "v0_2_failed_reset_audit": "asre_results/move_block_reveal_can/formal_frozen_v0_2_20260903_105800/simulator/reset_audit.json",
+    "v0_3_constructor_failure_audit": "asre_results/move_block_reveal_can/formal_frozen_v0_3_20260903_112200/simulator/reset_audit.json"
+  },
+  "evaluation_plan_frozen_before_fastwam": {
+    "native_downstream_calibration": {
+      "task": "place_can_basket",
+      "task_config": "demo_clean",
+      "seeds": [100000, 100001, 100002, 100003, 100004],
+      "admission_threshold": 0.8
+    },
+    "native_approximate_block_calibration": {
+      "task": "handover_block",
+      "task_config": "demo_clean",
+      "seeds": [100000, 100001, 100002, 100003, 100004],
+      "admission_threshold": 0.7,
+      "evidence_boundary": "Same 0.06 m grasp cross-section/contact orientations; not an exact compound-body or reveal-sequence calibration."
+    },
+    "admission_rule": "Freeze after reset and scripted expert pass; run both native calibrations once; run the three paired conditions only if both admission thresholds pass; never change scene/task parameters from policy results.",
+    "pilot_episodes_per_condition": 3
+  },
+  "gpu_protocol": {
+    "default_simulator_physical_gpu": 6,
+    "default_policy_physical_gpu": 7,
+    "allowed_physical_indices": [4, 5, 6, 7],
+    "guard": "Before every launch, persist nvidia-smi/compute-app/pmon snapshots and refuse any target card with a non-Xorg process.",
+    "isolation": "Bind SAPIEN by physical PCI address, CUDA by GPU UUID, and expose only selected NVIDIA/DRI device nodes through bubblewrap."
+  },
+  "frozen_sha256": {
+    "task_source": "321528a7f0a748d8077c0223ba568daa0fd7e4010f6a5a6b9aaacaab4b448c9a",
+    "simulator_test": "0c902a6c4611cffc43c0ffddc4349ffa48fa9e80a1e51afce79999abbf63f6b2",
+    "reproduction_script": "44c70d390456be1c459ca90cd70991b85758c42a23dbca3c4be87d8a7abb5b6d",
+    "summarizer": "d934d8f4ba49323f56e6db474bec00d3dda6b35f31d67cc89d2f1dba203a2ad3",
+    "paired_seed_manifest": "ef4f8650c4bd5f25943903bedfde04676176937d3fe4b161ce5597ad71f6e39d",
+    "place_can_calibration_seed_manifest": "a63134878598c7a6968b28499a26b1773637060d5a950d8de900171e537ef51f",
+    "handover_block_calibration_seed_manifest": "88aa4ad5efa542a23d9699140d989e6c4ca3d8f2c3113375d42a2aef3117a146",
+    "fastwam_config": "6095648a779f89d6cb3eb1ea24f2e17b0a2876f035b358020425f835a4bd88d5",
+    "step_limit_config": "0f16a410d4d92b3bb00462eb022a8ec094c3aa93441eb1374b0749f3746bf9f0",
+    "native_handover_block_source": "5439712296d7e143d41f8e78b4ab86cd4fad7fb98f40f5f5abb067a462d17650",
+    "create_actor_source": "6bababee8e70da2460b2bbf47d3b5fbb20ccf73368782a7be596a63c962dce6d",
+    "actor_utils_source": "252d43c526b23adcf4ba549fec64a49f037fc4a24e9edd1998e5f60d3e13d5d9",
+    "instruction": "1efc71874d579c9e31d4ab88c06b58d54ef3a50bf5bd10277d6fbb5a395716fe"
+  },
+  "validation_status_at_freeze": {
+    "v0_3_1_reset": "not_run",
+    "v0_3_1_scripted_expert": "not_run",
+    "fastwam": "not_run"
+  }
+}

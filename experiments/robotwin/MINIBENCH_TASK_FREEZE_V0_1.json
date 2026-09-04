@@ -1,0 +1,42 @@
+{
+  "freeze_name": "MINIBENCH_TASK_FREEZE_V0.1",
+  "frozen_at": "2026-09-03T10:35:09+08:00",
+  "supersedes": "MINIBENCH_TASK_FREEZE_V0",
+  "parent_manifest": "experiments/robotwin/MINIBENCH_TASK_FREEZE_V0.json",
+  "parent_manifest_sha256": "9351e67fb6446ac2dfab17358df9bbcbd75c8310c72f0b9e051e21ac28e3ddb9",
+  "reason": "Two simulator-only implementation bugs were confirmed before any FastWAM evaluation: the expert selected a grasp axis wider than the gripper aperture, and the success predicate reused a native lifted-basket table-contact check although this task leaves the basket on the table.",
+  "policy_evaluation_started": false,
+  "unchanged_from_v0": [
+    "source-of-truth and asset donor",
+    "instruction",
+    "can and basket assets, models, masses, poses, and sampling ranges",
+    "block geometry, mass, color, occluding pose, and revealed pose",
+    "visible, missing, and oracle_reveal definitions",
+    "camera configuration and visibility thresholds",
+    "paired-state tolerance and intervention timing",
+    "episode horizon and randomization configuration",
+    "paired seed list",
+    "FastWAM admission and pilot protocol"
+  ],
+  "implementation_bugfixes": {
+    "expert_grasp": {
+      "before": "Native pose scorer selected among contacts 0,1,2,3 without checking block thickness; all three Missing trials pushed/tipped the block instead of lifting it.",
+      "after": "Use contact 1 for the left arm and contact 2 for the right arm so the fingers close across the frozen 0.05 m Y thickness rather than the 0.11 m X width."
+    },
+    "success_predicate": {
+      "before": "A can/table actor-pair report was a required failure condition copied from the native lifted-basket task.",
+      "after": "Can/table actor-pair reporting is diagnostic only. Required success remains basket upright, can center contained, can contacts basket, can-side gripper open, and stable can/basket relative motion for 25 physics steps."
+    }
+  },
+  "frozen_task_source_sha256": "8a69af4e5d782cb9b811bf6a278aae7de6744709f86f267e43e748f50fb80286",
+  "frozen_simulator_test_sha256": "bde703432db2b0aff622d7d3de2e168e9d57e455622a1e0bbd22b58c0bc55296",
+  "paired_seed_manifest_sha256": "ef4f8650c4bd5f25943903bedfde04676176937d3fe4b161ce5597ad71f6e39d",
+  "fastwam_config_sha256": "6095648a779f89d6cb3eb1ea24f2e17b0a2876f035b358020425f835a4bd88d5",
+  "step_limit_config_sha256": "0f16a410d4d92b3bb00462eb022a8ec094c3aa93441eb1374b0749f3746bf9f0",
+  "v0_failure_audit": "asre_results/move_block_reveal_can/formal_frozen_v0_20260903_101625/simulator/expert_audit.json",
+  "validation_status_at_freeze": {
+    "v0_1_reset": "not_run",
+    "v0_1_scripted_expert": "not_run",
+    "fastwam": "not_run"
+  }
+}

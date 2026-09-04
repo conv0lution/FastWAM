@@ -1,0 +1,6 @@
+{
+  "protocol": "fixed consecutive seeds selected before FastWAM evaluation",
+  "task": "move_block_reveal_can",
+  "task_config": "demo_clean",
+  "seeds": [4300000, 4300001, 4300002]
+}

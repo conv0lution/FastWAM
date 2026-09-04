@@ -18,6 +18,7 @@ from datetime import datetime
 import importlib
 import argparse
 import pdb
+import json
 
 from generate_episode_instructions import *
 
@@ -27,6 +28,16 @@ parent_directory = os.path.dirname(current_file_path)
 
 def class_decorator(task_name):
     envs_module = importlib.import_module(f"envs.{task_name}")
+    module_path = Path(envs_module.__file__).resolve()
+    expected_root = Path(
+        os.environ.get("FASTWAM_ROBOTWIN_SOURCE_OF_TRUTH", Path.cwd())
+    ).resolve()
+    if not module_path.is_relative_to(expected_root):
+        raise RuntimeError(
+            f"RoboTwin task import escaped source of truth: {module_path} "
+            f"is not under {expected_root}"
+        )
+    print(f"ROBOTWIN_TASK_IMPORT={module_path}")
     try:
         env_class = getattr(envs_module, task_name)
         env_instance = env_class()
@@ -124,6 +135,8 @@ def main(usr_args):
     args['task_name'] = task_name
     args["task_config"] = task_config
     args["ckpt_setting"] = ckpt_setting
+    if usr_args.get("minibench_condition") is not None:
+        args["minibench_condition"] = usr_args["minibench_condition"]
 
     embodiment_type = args.get("embodiment")
     embodiment_config_path = os.path.join(CONFIGS_PATH, "_embodiment_config.yml")
@@ -216,7 +229,9 @@ def main(usr_args):
                                    test_num=test_num,
                                    video_size=video_size,
                                    instruction_type=instruction_type,
-                                   skip_get_obs_within_replan=skip_get_obs_within_replan)
+                                   skip_get_obs_within_replan=skip_get_obs_within_replan,
+                                   seed_manifest_path=usr_args.get("seed_manifest_path"),
+                                   episode_output_dir=save_dir)
     suc_nums.append(suc_num)
 
     topk_success_rate = sorted(suc_nums, reverse=True)[:topk]
@@ -241,173 +256,295 @@ def eval_policy(task_name,
                 test_num=100,
                 video_size=None,
                 instruction_type=None,
-                skip_get_obs_within_replan=False):
+                skip_get_obs_within_replan=False,
+                seed_manifest_path=None,
+                episode_output_dir=None):
     print(f"\033[34mTask Name: {args['task_name']}\033[0m")
     print(f"\033[34mPolicy Name: {args['policy_name']}\033[0m")
 
-    expert_check = True
     TASK_ENV.suc = 0
     TASK_ENV.test_num = 0
-
-    now_id = 0
-    succ_seed = 0
     suc_test_seed_list = []
-
     policy_name = args["policy_name"]
     eval_func = eval_function_decorator(policy_name, "eval")
     reset_func = eval_function_decorator(policy_name, "reset_model")
-
     now_seed = st_seed
-    task_total_reward = 0
     clear_cache_freq = args["clear_cache_freq"]
-
     args["eval_mode"] = True
 
-    while succ_seed < test_num:
-        render_freq = args["render_freq"]
-        args["render_freq"] = 0
+    strict_seeds = None
+    if seed_manifest_path is not None and str(seed_manifest_path).strip():
+        manifest_path = Path(str(seed_manifest_path)).expanduser().resolve()
+        with manifest_path.open("r", encoding="utf-8") as handle:
+            manifest = json.load(handle)
+        manifest_task = manifest.get("task")
+        if manifest_task is not None and manifest_task != task_name:
+            raise ValueError(
+                f"Seed manifest task={manifest_task!r} does not match evaluation task={task_name!r}"
+            )
+        manifest_config = manifest.get("task_config")
+        if manifest_config is not None and manifest_config != args["task_config"]:
+            raise ValueError(
+                f"Seed manifest task_config={manifest_config!r} does not match "
+                f"evaluation config={args['task_config']!r}"
+            )
+        strict_seeds = [int(seed) for seed in manifest["seeds"]]
+        if len(strict_seeds) != test_num:
+            raise ValueError(
+                f"Seed manifest has {len(strict_seeds)} seeds but eval_num_episodes={test_num}: "
+                f"{manifest_path}"
+            )
+        if len(strict_seeds) != len(set(strict_seeds)):
+            raise ValueError(f"Seed manifest contains duplicate seeds: {manifest_path}")
+        print(f"STRICT_SEED_MANIFEST={manifest_path}")
+        print(f"STRICT_SEEDS={strict_seeds}")
+    if task_name == "move_block_reveal_can" and strict_seeds is None:
+        raise ValueError(
+            "move_block_reveal_can requires seed_manifest_path; implicit seed "
+            "substitution is forbidden for the paired experiment"
+        )
 
-        if expert_check:
-            try:
-                TASK_ENV.setup_demo(now_ep_num=now_id, seed=now_seed, is_test=True, **args)
-                episode_info = TASK_ENV.play_once()
-                TASK_ENV.close_env()
-            except UnStableError as e:
-                # print(" -------------")
-                # print("Error: ", e)
-                # print(" -------------")
-                TASK_ENV.close_env()
-                now_seed += 1
-                args["render_freq"] = render_freq
-                continue
-            except Exception as e:
-                print(" -------------")
-                print("Error: ", e)
-                print("Stack Trace: ", traceback.format_exc())
-                print(" -------------")
-                TASK_ENV.close_env()
-                now_seed += 1
-                args["render_freq"] = render_freq
-                print("error occurs !")
-                continue
-
-        if (not expert_check) or (TASK_ENV.plan_success and TASK_ENV.check_success()):
-            succ_seed += 1
-            suc_test_seed_list.append(now_seed)
-        else:
-            now_seed += 1
-            args["render_freq"] = render_freq
-            continue
-
-        args["render_freq"] = render_freq
-
+    def close_task(clear_cache=False):
         try:
-            TASK_ENV.setup_demo(now_ep_num=now_id, seed=now_seed, is_test=True, **args)
-        except UnStableError as e:
-            # This seed passed expert_check but failed during rollout env init.
-            # Roll back the accepted-seed counter and skip to next seed.
-            succ_seed -= 1
-            if len(suc_test_seed_list) > 0 and suc_test_seed_list[-1] == now_seed:
-                suc_test_seed_list.pop()
-            TASK_ENV.close_env()
-            now_seed += 1
-            continue
-        except Exception as e:
-            succ_seed -= 1
-            if len(suc_test_seed_list) > 0 and suc_test_seed_list[-1] == now_seed:
-                suc_test_seed_list.pop()
-            print(" -------------")
-            print("Error: ", e)
-            print("Stack Trace: ", traceback.format_exc())
-            print(" -------------")
-            TASK_ENV.close_env()
-            now_seed += 1
-            print("error occurs !")
-            continue
+            TASK_ENV.close_env(clear_cache=clear_cache)
+        except Exception:
+            pass
+
+    def prepare_handoff():
+        hook = getattr(TASK_ENV, "prepare_policy_handoff", None)
+        if hook is not None:
+            hook()
+
+    if episode_output_dir is None:
+        raise ValueError("episode_output_dir is required for deterministic result logging")
+    episode_output_dir = Path(episode_output_dir)
+
+    def append_episode_record(payload):
+        path = episode_output_dir / "episodes.jsonl"
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, sort_keys=True) + "\n")
+
+    prevalidated_strict_tasks = {
+        "place_can_basket",
+        "move_block_reveal_can_block_calibration",
+        "move_block_reveal_can",
+    }
+
+    def episode_info_from_frozen_scene():
+        if task_name in {
+            "move_block_reveal_can",
+            "move_block_reveal_can_block_calibration",
+        }:
+            return {"info": {}}
+        if task_name == "place_can_basket":
+            return {
+                "info": {
+                    "{A}": f"{TASK_ENV.can_name}/base{TASK_ENV.can_id}",
+                    "{B}": f"{TASK_ENV.basket_name}/base{TASK_ENV.basket_id}",
+                    "{a}": str(TASK_ENV.arm_tag),
+                }
+            }
+        raise RuntimeError(
+            "No deterministic instruction metadata adapter for prevalidated "
+            f"strict task {task_name!r}"
+        )
+
+    for now_id in range(test_num):
+        requested_seed = strict_seeds[now_id] if strict_seeds is not None else None
+        expert_attempt = 0
+        expert_attempts_used = 0
+        expert_precheck_skipped = bool(
+            task_name in prevalidated_strict_tasks and requested_seed is not None
+        )
+        max_expert_attempts = int(
+            getattr(TASK_ENV, "SCRIPTED_EXPERT_MAX_ATTEMPTS", 1)
+        )
+        if max_expert_attempts < 1:
+            raise ValueError("SCRIPTED_EXPERT_MAX_ATTEMPTS must be positive")
+
+        if expert_precheck_skipped:
+            # The frozen MiniBench protocol validates these exact paired
+            # task and calibration scenes with a separate simulator-only
+            # expert audit. Re-running the stochastic CuRobo expert here would
+            # re-screen fixed seeds at policy-evaluation time and could abort
+            # before the model sees the scene. Evaluate every manifest seed
+            # directly instead.
+            now_seed = requested_seed
+            episode_info = None
+            print(
+                "SCRIPTED_EXPERT_PREFLIGHT_SKIPPED "
+                f"task={task_name} seed={now_seed} "
+                "reason=frozen_simulator_audit"
+            )
+        else:
+            # Native RoboTwin evaluation normally skips seeds its expert cannot
+            # solve.  A strict manifest instead fails closed so calibration
+            # seeds can never silently drift to different seeds.
+            while True:
+                now_seed = requested_seed if requested_seed is not None else now_seed
+                expert_error = None
+                expert_traceback = None
+                render_freq = args["render_freq"]
+                args["render_freq"] = 0
+                try:
+                    TASK_ENV.setup_demo(now_ep_num=now_id, seed=now_seed, is_test=True, **args)
+                    prepare_handoff()
+                    episode_info = TASK_ENV.play_once()
+                    expert_ok = bool(TASK_ENV.plan_success and TASK_ENV.check_success())
+                except Exception as exc:
+                    expert_ok = False
+                    expert_error = f"{type(exc).__name__}: {exc}"
+                    expert_traceback = traceback.format_exc()
+                finally:
+                    close_task()
+                    args["render_freq"] = render_freq
+
+                expert_attempts_used = expert_attempt + 1
+                if expert_ok:
+                    break
+                if requested_seed is not None:
+                    expert_attempt += 1
+                    if expert_attempt < max_expert_attempts:
+                        print(
+                            "STRICT_SEED_EXPERT_RETRY "
+                            f"task={task_name} seed={now_seed} "
+                            f"next_attempt={expert_attempt + 1}/{max_expert_attempts} "
+                            f"reason={expert_error or 'plan_success/check_success false'}"
+                        )
+                        continue
+                    raise RuntimeError(
+                        f"Strict seed {now_seed} failed scripted expert for {task_name}: "
+                        f"{expert_error or 'plan_success/check_success false'} "
+                        f"after {max_expert_attempts} fixed-seed attempts\n"
+                        f"{expert_traceback or ''}"
+                    )
+                now_seed += 1
+
+        suc_test_seed_list.append(now_seed)
+        TASK_ENV.setup_demo(now_ep_num=now_id, seed=now_seed, is_test=True, **args)
+        prepare_handoff()
+
+        if episode_info is None:
+            episode_info = episode_info_from_frozen_scene()
+
         episode_info_list = [episode_info["info"]]
         results = generate_episode_descriptions(args["task_name"], episode_info_list, test_num)
-        instruction = np.random.choice(results[0][instruction_type])
-        TASK_ENV.set_instruction(instruction=instruction)  # set language instruction
+        if not results or not results[0][instruction_type]:
+            close_task()
+            raise RuntimeError(
+                f"No {instruction_type!r} instruction generated for task={task_name}, seed={now_seed}"
+            )
+        instruction = str(np.random.choice(results[0][instruction_type]))
+        TASK_ENV.set_instruction(instruction=instruction)
+        print(f"EPISODE_START index={now_id} seed={now_seed} instruction={instruction!r}")
 
         current_video_path = None
+        renamed_video_path = None
+        ffmpeg_process = None
         if TASK_ENV.eval_video_path is not None:
             episode_idx = TASK_ENV.test_num
             current_video_path = Path(TASK_ENV.eval_video_path) / f"episode{episode_idx}.mp4"
             ffmpeg = subprocess.Popen(
                 [
-                    "ffmpeg",
-                    "-y",
-                    "-loglevel",
-                    "error",
-                    "-f",
-                    "rawvideo",
-                    "-pixel_format",
-                    "rgb24",
-                    "-video_size",
-                    video_size,
-                    "-framerate",
-                    "10",
-                    "-i",
-                    "-",
-                    "-pix_fmt",
-                    "yuv420p",
-                    "-vcodec",
-                    "libx264",
-                    "-crf",
-                    "23",
-                    str(current_video_path),
+                    "ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo",
+                    "-pixel_format", "rgb24", "-video_size", video_size,
+                    "-framerate", "10", "-i", "-", "-pix_fmt", "yuv420p",
+                    "-vcodec", "libx264", "-crf", "23", str(current_video_path),
                 ],
                 stdin=subprocess.PIPE,
             )
+            ffmpeg_process = ffmpeg
             TASK_ENV._set_eval_video_ffmpeg(ffmpeg)
 
         succ = False
-        reset_func(model)
-        while TASK_ENV.take_action_cnt < TASK_ENV.step_lim:
-            need_obs = True
-            if skip_get_obs_within_replan and hasattr(model, "should_request_observation"):
-                need_obs = bool(model.should_request_observation())
+        video_finalized = False
+        try:
+            reset_func(model)
+            while TASK_ENV.take_action_cnt < TASK_ENV.step_lim:
+                need_obs = True
+                if skip_get_obs_within_replan and hasattr(model, "should_request_observation"):
+                    need_obs = bool(model.should_request_observation())
+                observation = TASK_ENV.get_obs() if need_obs else None
+                eval_func(TASK_ENV, model, observation)
+                if TASK_ENV.eval_success:
+                    succ = True
+                    break
+            succ = bool(succ or TASK_ENV.check_success())
 
-            observation = None
-            if need_obs:
-                observation = TASK_ENV.get_obs()
-            eval_func(TASK_ENV, model, observation)
-            if TASK_ENV.eval_success:
-                succ = True
-                break
-        # task_total_reward += TASK_ENV.episode_score
-        if TASK_ENV.eval_video_path is not None:
-            TASK_ENV._del_eval_video_ffmpeg()
-            if current_video_path is None or not current_video_path.exists():
-                raise FileNotFoundError(f"Expected eval video file not found: {current_video_path}")
-            is_randomized = "randomized" in str(args["task_config"]).lower()
-            renamed_video_path = (
-                Path(TASK_ENV.eval_video_path)
-                / f"episode{episode_idx}_randomized-{str(is_randomized).lower()}_success-{str(succ).lower()}.mp4"
+            if TASK_ENV.eval_video_path is not None:
+                TASK_ENV._del_eval_video_ffmpeg()
+                video_finalized = True
+                if ffmpeg_process is None or ffmpeg_process.returncode != 0:
+                    raise RuntimeError(
+                        "ffmpeg failed while finalizing the episode video: "
+                        f"returncode={None if ffmpeg_process is None else ffmpeg_process.returncode}"
+                    )
+                if current_video_path is None or not current_video_path.exists():
+                    raise FileNotFoundError(f"Expected eval video file not found: {current_video_path}")
+                if current_video_path.stat().st_size <= 0:
+                    raise RuntimeError(f"Episode video is empty: {current_video_path}")
+                is_randomized = "randomized" in str(args["task_config"]).lower()
+                renamed_video_path = (
+                    Path(TASK_ENV.eval_video_path)
+                    / f"episode{episode_idx}_seed-{now_seed}_randomized-"
+                    f"{str(is_randomized).lower()}_success-{str(succ).lower()}.mp4"
+                )
+                current_video_path.rename(renamed_video_path)
+
+            if hasattr(TASK_ENV, "get_minibench_record"):
+                episode_record = TASK_ENV.get_minibench_record(refresh_visibility=True)
+            else:
+                episode_record = {
+                    "task": task_name,
+                    "condition": None,
+                    "seed": now_seed,
+                }
+            episode_record.update(
+                {
+                    "episode_index": now_id,
+                    "seed": now_seed,
+                    "scripted_expert_precheck_skipped": expert_precheck_skipped,
+                    "scripted_expert_attempts_used": expert_attempts_used,
+                    "scripted_expert_max_attempts": max_expert_attempts,
+                    "instruction": instruction,
+                    "success": succ,
+                    "video_path": str(renamed_video_path) if renamed_video_path else None,
+                }
             )
-            current_video_path.rename(renamed_video_path)
+            append_episode_record(episode_record)
+        finally:
+            if not video_finalized:
+                ffmpeg_process = getattr(TASK_ENV, "eval_video_ffmpeg", None)
+                if ffmpeg_process is not None:
+                    try:
+                        TASK_ENV._del_eval_video_ffmpeg()
+                    except Exception:
+                        try:
+                            if ffmpeg_process.stdin is not None and not ffmpeg_process.stdin.closed:
+                                ffmpeg_process.stdin.close()
+                            ffmpeg_process.terminate()
+                            ffmpeg_process.wait(timeout=5)
+                        except Exception:
+                            ffmpeg_process.kill()
+                            ffmpeg_process.wait()
+            close_task(clear_cache=((now_id + 1) % clear_cache_freq == 0))
 
+        TASK_ENV.test_num += 1
         if succ:
             TASK_ENV.suc += 1
             print("\033[92mSuccess!\033[0m")
         else:
             print("\033[91mFail!\033[0m")
-
-        now_id += 1
-        TASK_ENV.close_env(clear_cache=((succ_seed + 1) % clear_cache_freq == 0))
-
-        if TASK_ENV.render_freq:
-            TASK_ENV.viewer.close()
-
-        TASK_ENV.test_num += 1
-
         print(
-            f"\033[93m{task_name}\033[0m | \033[94m{args['policy_name']}\033[0m | \033[92m{args['task_config']}\033[0m | \033[91m{args['ckpt_setting']}\033[0m\n"
-            f"Success rate: \033[96m{TASK_ENV.suc}/{TASK_ENV.test_num}\033[0m => \033[95m{round(TASK_ENV.suc/TASK_ENV.test_num*100, 1)}%\033[0m, current seed: \033[90m{now_seed}\033[0m\n"
+            f"\033[93m{task_name}\033[0m | \033[94m{args['policy_name']}\033[0m | "
+            f"\033[92m{args['task_config']}\033[0m | seed={now_seed}\n"
+            f"Success rate: {TASK_ENV.suc}/{TASK_ENV.test_num} "
+            f"=> {round(TASK_ENV.suc / TASK_ENV.test_num * 100, 1)}%\n"
         )
-        # TASK_ENV._take_picture()
-        now_seed += 1
+        if requested_seed is None:
+            now_seed += 1
 
+    print(f"EVALUATED_SEEDS={suc_test_seed_list}")
     return now_seed, TASK_ENV.suc
 
 

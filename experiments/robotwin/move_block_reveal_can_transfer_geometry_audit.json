@@ -1,0 +1,48 @@
+{
+  "audit_scope": "scripted-expert held-can transfer path only",
+  "version": "V0.3.8",
+  "policy_evaluation_started": false,
+  "renderer_or_gpu_used_for_this_static_audit": false,
+  "scene_geometry_changed": false,
+  "task_semantics_changed": false,
+  "condition_definitions_changed": false,
+  "success_predicate_changed": false,
+  "input_evidence": {
+    "v0_3_7_run_root": "/home/zhaizicheng/Reasoning/FastWAM/asre_results/move_block_reveal_can/formal_frozen_v0_3_7_20260903_144900",
+    "reset": "passed all paired-state, visibility, stability, and screenshot checks",
+    "expert": "0/9 condition cells and 0/27 fixed-seed attempts passed",
+    "failure_partition": {
+      "seed_4300000_and_4300002_all_conditions": "18/27 attempts stopped after can_post_close because the pre-insertion plan was rejected",
+      "seed_4300001_all_conditions": "9/27 attempts reached release only after pushing the basket; the can fell to the table and retreat then failed"
+    },
+    "common_geometric_cause": "the V0.3.7 fixed +0.080 m pre-insertion waypoint left the held-can lower AABB 0.0719-0.0760 m below the complete basket upper AABB, which includes the handle"
+  },
+  "correction": {
+    "classification": "pre-policy scripted-expert path correction",
+    "required_full_aabb_clearance_m": 0.02,
+    "validation_tolerance_m": 0.002,
+    "formula": "transfer_lift = max(0, basket_world_aabb_max_z + 0.020 - target_can_world_aabb_min_z)",
+    "forward_path": [
+      "native can grasp",
+      "pure vertical lift at the source to the derived high-transfer EE height",
+      "horizontal transfer at that fixed high clearance to the audited functional lane",
+      "pure vertical insertion to the unchanged V0.3.7 target"
+    ],
+    "release_and_retreat": [
+      "open gripper at the unchanged insertion target",
+      "retreat vertically to the same high-transfer waypoint",
+      "return to native home"
+    ],
+    "runtime_guard": "during the held-can horizontal transfer, require the can lower world AABB to remain at least 0.020 m above the basket upper world AABB within 0.002 m tolerance and reject any physically meaningful can-basket contact",
+    "unchanged_insertion": {
+      "functional_lane_fraction": 0.75,
+      "can_bottom_clearance_m": 0.005,
+      "basket_interior_floor_local_y_m": {
+        "0": 0.01617722153663635,
+        "1": 0.01350564569234848
+      },
+      "orientation_and_grasp_transform": "preserved"
+    }
+  },
+  "non_tuning_statement": "No FastWAM inference has been run. This correction was derived only from scripted-expert physical traces and full actor AABBs; it does not change block dimensions/pose, can or basket sampling, cameras, horizon, randomization, visibility, instruction, success, or any condition."
+}

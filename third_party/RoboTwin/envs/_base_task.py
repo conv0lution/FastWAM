@@ -220,19 +220,50 @@ class Base_Task(gym.Env):
     def check_success(self):
         pass
 
+    def _after_physics_step(self):
+        """Optional task hook called exactly once after controlled physics steps."""
+        return None
+
     def setup_scene(self, **kwargs):
         """
         Set the scene
             - Set up the basic scene: light source, viewer.
         """
         self.engine = sapien.Engine()
+        # SAPIEN 3's legacy Engine/SapienRenderer wrappers do not forward a
+        # render-device argument to the RenderSystem created for the scene.
+        # CUDA_VISIBLE_DEVICES therefore does not, by itself, prevent Vulkan
+        # from selecting another physical GPU.  The MiniBench runner sets the
+        # PCI-qualified alias explicitly so rendering and CUDA stay on the
+        # GPUs reserved for this experiment.
+        render_device_alias = os.environ.get("ROBOTWIN_RENDER_DEVICE")
+        render_device = None
+        if render_device_alias:
+            render_device = sapien.Device(render_device_alias)
+            if not render_device.can_render():
+                raise RuntimeError(
+                    f"Requested RoboTwin render device cannot render: {render_device_alias}"
+                )
+            print(
+                "ROBOTWIN_RENDER_DEVICE="
+                f"{render_device_alias} resolved={render_device} "
+                f"pci={render_device.pci_string} cuda_id={render_device.cuda_id}"
+            )
+
         # declare sapien renderer
         from sapien.render import set_global_config
 
         set_global_config(max_num_materials=50000, max_num_textures=50000)
-        self.renderer = sapien.SapienRenderer()
-        # give renderer to sapien sim
-        self.engine.set_renderer(self.renderer)
+        if render_device is None:
+            self.renderer = sapien.SapienRenderer()
+            # give renderer to sapien sim
+            self.engine.set_renderer(self.renderer)
+        else:
+            # A standalone legacy SapienRenderer creates a second graphics
+            # context even when the Scene RenderSystem is explicitly pinned.
+            # Formal evaluation is headless (render_freq=0), so it needs only
+            # the pinned RenderSystem below.
+            self.renderer = None
 
         sapien.render.set_camera_shader_dir("rt")
         sapien.render.set_ray_tracing_samples_per_pixel(32)
@@ -241,7 +272,16 @@ class Base_Task(gym.Env):
 
         # declare sapien scene
         scene_config = sapien.SceneConfig()
-        self.scene = self.engine.create_scene(scene_config)
+        if render_device is None:
+            self.scene = self.engine.create_scene(scene_config)
+        else:
+            sapien.physx.set_scene_config(scene_config)
+            self.scene = sapien.Scene(
+                [
+                    sapien.physx.PhysxCpuSystem(),
+                    sapien.render.RenderSystem(render_device),
+                ]
+            )
         # set simulation timestep
         self.scene.set_timestep(kwargs.get("timestep", 1 / 250))
         # add ground to scene
@@ -278,6 +318,11 @@ class Base_Task(gym.Env):
 
         # initialize viewer with camera position and orientation
         if self.render_freq:
+            if self.renderer is None:
+                raise RuntimeError(
+                    "Interactive Viewer is disabled with explicit headless "
+                    "ROBOTWIN_RENDER_DEVICE binding"
+                )
             self.viewer = Viewer(self.renderer)
             self.viewer.set_scene(self.scene)
             self.viewer.set_camera_xyz(
@@ -891,6 +936,7 @@ class Base_Task(gym.Env):
                 now_right_id += 1
 
             self.scene.step()
+            self._after_physics_step()
             if self.render_freq and i % self.render_freq == 0:
                 self._update_render()
                 self.viewer.render()
@@ -1484,6 +1530,7 @@ class Base_Task(gym.Env):
                 )  # TODO
 
             self.scene.step()
+            self._after_physics_step()
 
             if self.render_freq and control_idx % self.render_freq == 0:
                 self._update_render()
@@ -1675,6 +1722,7 @@ class Base_Task(gym.Env):
                 now_right_id += 1
 
             self.scene.step()
+            self._after_physics_step()
             self._update_render()
                 
             if self.check_success():

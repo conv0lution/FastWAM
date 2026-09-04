@@ -49,9 +49,8 @@ class Sapien_TEST(gym.Env):
         try:
             self.setup_scene()
             print("\033[32m" + "Render Well" + "\033[0m")
-        except:
-            print("\033[31m" + "Render Error" + "\033[0m")
-            exit()
+        except Exception as exc:
+            raise RuntimeError(f"Render preflight failed: {exc}") from exc
 
     def setup_scene(self, **kwargs):
         """
@@ -59,13 +58,28 @@ class Sapien_TEST(gym.Env):
             - Set up the basic scene: light source, viewer.
         """
         self.engine = sapien.Engine()
+        render_device_alias = os.environ.get("ROBOTWIN_RENDER_DEVICE")
+        if not render_device_alias:
+            raise RuntimeError(
+                "ROBOTWIN_RENDER_DEVICE must be an explicit PCI alias; "
+                "CUDA_VISIBLE_DEVICES does not constrain SAPIEN/Vulkan"
+            )
+        render_device = sapien.Device(render_device_alias)
+        if not render_device.can_render():
+            raise RuntimeError(f"Render device cannot render: {render_device_alias}")
+        print(
+            "ROBOTWIN_RENDER_PREFLIGHT_DEVICE="
+            f"{render_device_alias} resolved={render_device} "
+            f"pci={render_device.pci_string} cuda_id={render_device.cuda_id}"
+        )
         # declare sapien renderer
         from sapien.render import set_global_config
 
         set_global_config(max_num_materials=50000, max_num_textures=50000)
-        self.renderer = sapien.SapienRenderer()
-        # give renderer to sapien sim
-        self.engine.set_renderer(self.renderer)
+        # Do not instantiate the legacy SapienRenderer here: in SAPIEN 3 it
+        # creates a second, default graphics context.  The headless preflight
+        # needs only the explicitly pinned RenderSystem below.
+        self.renderer = None
 
         sapien.render.set_camera_shader_dir("rt")
         sapien.render.set_ray_tracing_samples_per_pixel(32)
@@ -74,7 +88,13 @@ class Sapien_TEST(gym.Env):
 
         # declare sapien scene
         scene_config = sapien.SceneConfig()
-        self.scene = self.engine.create_scene(scene_config)
+        sapien.physx.set_scene_config(scene_config)
+        self.scene = sapien.Scene(
+            [
+                sapien.physx.PhysxCpuSystem(),
+                sapien.render.RenderSystem(render_device),
+            ]
+        )
 
 
 if __name__ == "__main__":

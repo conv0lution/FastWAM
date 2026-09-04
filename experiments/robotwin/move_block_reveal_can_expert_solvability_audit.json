@@ -1,0 +1,86 @@
+{
+  "audit": "move_block_reveal_can_scene_solvability_vs_expert_repeatability",
+  "version": "V0.3.11",
+  "policy_evaluation_started": false,
+  "task_scene_changed_between_evidence_runs": false,
+  "expert_motion_changed_between_evidence_runs": false,
+  "final_success_gate": "exact native place_can_basket.check_success(self), persistent for 25 actual physics steps",
+  "raw_runs": {
+    "v0_3_9": {
+      "path": "/home/zhaizicheng/Reasoning/FastWAM/asre_results/move_block_reveal_can/formal_frozen_v0_3_9_20260903_160100/simulator/expert_audit.json",
+      "sha256": "c21f84f7cfb3bf0d09041568b99d9e1df55fd1179a09d6be7978f4e64c5e4477",
+      "cell_witnesses_under_stricter_v0_3_9_gate": "8/9",
+      "first_attempt_successes": "3/9",
+      "all_attempt_successes": "11/20"
+    },
+    "v0_3_10": {
+      "path": "/home/zhaizicheng/Reasoning/FastWAM/asre_results/move_block_reveal_can/formal_frozen_v0_3_10_20260903_163600/simulator/expert_audit.json",
+      "sha256": "7d2a322981a108a03108bdf68b323797c9fc07d2d1d8665299e586b583705a88",
+      "cell_witnesses_under_final_native_gate": "7/9",
+      "first_attempt_successes": "7/9",
+      "all_attempt_successes": "13/20"
+    },
+    "v0_3_10_calibration_expert": {
+      "path": "/home/zhaizicheng/Reasoning/FastWAM/asre_results/move_block_reveal_can/formal_frozen_v0_3_10_20260903_163600/simulator/calibration_expert_audit.json",
+      "sha256": "1f7f3fa58043aa2e1c9728e72d001ac144f1b11615be882e4b946a6bea994439",
+      "native_place_can_basket_seed_witnesses": "5/5",
+      "exact_block_reveal_seed_witnesses": "5/5"
+    },
+    "v0_3_11_calibration_expert_raw_172000": {
+      "path": "/home/zhaizicheng/Reasoning/FastWAM/asre_results/move_block_reveal_can/formal_frozen_v0_3_11_20260903_172000/simulator/calibration_expert_audit.json",
+      "sha256": "c635bd5f24ff24591bbb1b29ebb2ffed6d3e940bb0b880019090d7f50268179b",
+      "native_place_can_basket_seed_witnesses": "3/5",
+      "exact_block_reveal_seed_witnesses": "5/5",
+      "native_failures": {
+        "100000": "plan_success=true, final_success=false",
+        "100002": "plan_success=true, final_success=false"
+      }
+    }
+  },
+  "cross_run_scene_solvability_witnesses": {
+    "4300000": {
+      "visible": "V0.3.10 attempt 0",
+      "missing": "V0.3.10 attempt 0",
+      "oracle_reveal": "V0.3.10 attempt 0"
+    },
+    "4300001": {
+      "visible": "V0.3.9 attempt 0; passed the stricter old gate and therefore the final native gate",
+      "missing": "V0.3.9 attempt 1; passed the stricter old gate and therefore the final native gate",
+      "oracle_reveal": "V0.3.10 attempt 0"
+    },
+    "4300002": {
+      "visible": "V0.3.10 attempt 0",
+      "missing": "V0.3.10 attempt 0",
+      "oracle_reveal": "V0.3.10 attempt 0"
+    }
+  },
+  "calibration_scene_defining_sha256": {
+    "place_can_basket_source": "9f24e5ac98146babe93c68cb46baaf1d7bf21e38dbfc7c0b29e7020ae764e7f0",
+    "move_block_reveal_can_source": "b2556b158ff98f0df12440a857ad8a1390b8f422f8709f1ee0b08db339ee6d9f",
+    "block_calibration_source": "46710ccc3c843e03b6852e2df548b5378198a259dbe16a5e491dc0adb89cb2f9",
+    "demo_clean_config": "ac6d7c13fa3eb5b935a9314ce0b68a7c338e617dec941bb309c12bc726bb8348",
+    "place_can_seed_manifest": "a63134878598c7a6968b28499a26b1773637060d5a950d8de900171e537ef51f",
+    "block_seed_manifest": "9f3ae3f854cdd9834b7dfe65caba6c49c3f3e6caf741d7392ba592254e043893"
+  },
+  "cross_run_calibration_scene_solvability_witnesses": {
+    "place_can_basket": {
+      "100000": "V0.3.10 attempt 0",
+      "100001": "V0.3.10 attempt 0 and V0.3.11 raw-172000 attempt 0",
+      "100002": "V0.3.10 attempt 0",
+      "100003": "V0.3.10 attempt 0 and V0.3.11 raw-172000 attempt 0",
+      "100004": "V0.3.10 attempt 0 and V0.3.11 raw-172000 attempt 0"
+    },
+    "move_block_reveal_can_block_calibration": {
+      "200000": "V0.3.10 attempt 0 and V0.3.11 raw-172000 attempt 0",
+      "200001": "V0.3.10 attempt 0 and V0.3.11 raw-172000 attempt 0",
+      "200002": "V0.3.10 attempt 0 and V0.3.11 raw-172000 attempt 0",
+      "200003": "V0.3.10 attempt 0 and V0.3.11 raw-172000 attempt 0",
+      "200004": "V0.3.10 attempt 0 and V0.3.11 raw-172000 attempt 0"
+    }
+  },
+  "scene_solvability_witness_coverage": "9/9",
+  "calibration_scene_solvability_witness_coverage": "10/10",
+  "interpretation": "Every fixed seed-condition scene has at least one complete physical execution witness. The native scripted expert/CuRobo pipeline is nondeterministic and is not treated as a benchmark performance target. Raw per-run and per-attempt outcomes remain preserved and must be reported separately.",
+  "v0_3_11_freeze_gate": "For the main task, require at least one complete witness for each of visible, missing, and oracle_reveal, plus repeatable pre-intervention/handoff state for every seed-condition reconstruction. For calibration, execute every fixed seed once in the current run and retain raw outcomes; require exact task/config/seed hashes plus cross-run scene-solvability witness coverage for all 10 fixed scenes. Do not rerun adaptively until success.",
+  "prohibited_response": "Do not change task geometry, seeds, conditions, or policy inputs to improve expert or FastWAM success rates."
+}

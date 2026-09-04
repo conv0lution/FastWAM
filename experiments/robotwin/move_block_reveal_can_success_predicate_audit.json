@@ -1,0 +1,62 @@
+{
+  "audit": "move_block_reveal_can_success_predicate_alignment",
+  "version": "V0.3.10",
+  "classification": "pre-FastWAM simulator-only implementation-contract correction",
+  "policy_evaluation_started": false,
+  "scene_changed": false,
+  "source_evidence": {
+    "native_parent": "third_party/RoboTwin/envs/place_can_basket.py::place_can_basket.check_success",
+    "v0_3_9_run_root": "/home/zhaizicheng/Reasoning/FastWAM/asre_results/move_block_reveal_can/formal_frozen_v0_3_9_20260903_160100",
+    "v0_3_9_reset_audit_sha256": "400dcc79c3b1ac6b43c94e9daabcdcc47c1b12315407ed4a5d1979cb00e4202c",
+    "v0_3_9_expert_audit_sha256": "c21f84f7cfb3bf0d09041568b99d9e1df55fd1179a09d6be7978f4e64c5e4477"
+  },
+  "observed_failure": {
+    "seed": 4300001,
+    "condition": "oracle_reveal",
+    "v0_3_9_cell_result": "no complete witness in three fixed-state attempts",
+    "attempt_0": {
+      "native_parent_predicate": true,
+      "native_can_basket_center_l1_distance_m": 0.1345,
+      "v0_3_9_custom_gate": false,
+      "sole_failed_custom_component": "can_aabb_laterally_inside"
+    },
+    "attempt_1": {
+      "native_parent_predicate": false,
+      "classification": "genuine placement failure"
+    },
+    "attempt_2": {
+      "native_parent_predicate": true,
+      "native_can_basket_center_l1_distance_m": 0.1308,
+      "v0_3_9_custom_gate": false,
+      "sole_failed_custom_component": "can_aabb_laterally_inside"
+    }
+  },
+  "contract_mismatch": "The task requirement asked to reuse the native place_can_basket success condition. V0.3.9 instead gated success on a stricter full-AABB containment, release, and relative-motion surrogate.",
+  "v0_3_10_correction": {
+    "instantaneous_gate": "exact place_can_basket.check_success(self)",
+    "persistence": "the native predicate must remain true for 25 actual physics steps",
+    "block_scored": false,
+    "supplemental_only": [
+      "full-AABB containment",
+      "can-side gripper open",
+      "no can/gripper contact",
+      "relative can/basket linear speed",
+      "relative can/basket angular speed"
+    ]
+  },
+  "unchanged": [
+    "can sampling",
+    "basket sampling",
+    "occluder geometry and mass",
+    "occluding pose",
+    "revealed pose",
+    "condition definitions",
+    "camera setup",
+    "visibility thresholds",
+    "paired seeds",
+    "episode horizon",
+    "task randomization",
+    "instruction",
+    "scripted expert motion"
+  ]
+}

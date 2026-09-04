@@ -37,6 +37,16 @@ EVALUATION:
   # Runtime inputs
   dataset_stats_path: null
   device: cuda
+  # Optional local CUDA ordinals after CUDA_VISIBLE_DEVICES reordering.
+  # The formal two-GPU runner supplies these through environment variables so
+  # the policy and UMT5/Warp allocations do not contend on one device.
+  text_encoder_device: ${oc.env:FASTWAM_TEXT_ENCODER_DEVICE,null}
+  simulator_cuda_device: ${oc.env:FASTWAM_SIMULATOR_CUDA_DEVICE,null}
+  # Explicit SAPIEN/Vulkan device alias, e.g. pci:0000:81:00.0.
+  # CUDA_VISIBLE_DEVICES alone does not constrain the renderer.
+  render_device: null
+  minibench_condition: null
+  seed_manifest_path: null
 
 MULTIRUN:
   enabled: false

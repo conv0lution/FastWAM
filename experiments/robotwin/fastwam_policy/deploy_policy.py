@@ -81,6 +81,82 @@ def _mixed_precision_to_model_dtype(mixed_precision: str) -> torch.dtype:
     return torch.bfloat16
 
 
+def _resolve_available_cuda_device(device: Any, *, purpose: str) -> torch.device:
+    target = torch.device(str(device))
+    if target.type != "cuda":
+        raise ValueError(f"{purpose} must be a CUDA device, got {target}")
+    if not torch.cuda.is_available():
+        raise RuntimeError(f"Cannot use {target} for {purpose}: CUDA is unavailable")
+
+    device_index = torch.cuda.current_device() if target.index is None else target.index
+    if device_index < 0 or device_index >= torch.cuda.device_count():
+        raise RuntimeError(
+            f"Cannot use {target} for {purpose}: only "
+            f"{torch.cuda.device_count()} CUDA device(s) are visible"
+        )
+    return torch.device("cuda", device_index)
+
+
+def _place_text_encoder(model: torch.nn.Module, device: Any) -> None:
+    if _is_none_like(device):
+        return
+
+    text_encoder = getattr(model, "text_encoder", None)
+    if text_encoder is None:
+        raise ValueError(
+            "text_encoder_device was set, but the FastWAM model has no text encoder"
+        )
+
+    target = _resolve_available_cuda_device(device, purpose="text encoder placement")
+    text_encoder.to(target).eval()
+    first_parameter = next(text_encoder.parameters(), None)
+    actual = None if first_parameter is None else first_parameter.device
+    if actual != target:
+        raise RuntimeError(
+            "FastWAM text encoder did not remain on the requested CUDA device: "
+            f"requested={target}, actual={actual}"
+        )
+
+    # Moving UMT5 away from the policy device can leave its old allocator cache
+    # reserved there. Release that cache before constructing the first image
+    # tensor, while leaving the model weights and device assignment unchanged.
+    model_device = torch.device(str(getattr(model, "device", "cpu")))
+    if model_device.type == "cuda":
+        with torch.cuda.device(model_device):
+            torch.cuda.empty_cache()
+    logger.info(
+        "FASTWAM_TEXT_ENCODER_DEVICE requested=%s actual=%s model_device=%s",
+        device,
+        actual,
+        model_device,
+    )
+
+
+def _set_simulator_current_cuda_device(device: Any) -> None:
+    if _is_none_like(device):
+        return
+
+    target = _resolve_available_cuda_device(
+        device,
+        purpose="simulator current-device restoration",
+    )
+    torch.cuda.set_device(target)
+    current = torch.cuda.current_device()
+    if current != target.index:
+        raise RuntimeError(
+            "Failed to restore the simulator CUDA current device: "
+            f"requested={target}, current=cuda:{current}"
+        )
+    properties = torch.cuda.get_device_properties(current)
+    logger.info(
+        "FASTWAM_SIMULATOR_CUDA_CURRENT requested=%s current=cuda:%d name=%s uuid=%s",
+        device,
+        current,
+        properties.name,
+        getattr(properties, "uuid", "unavailable"),
+    )
+
+
 def _resolve_sim_cfg_name(sim_cfg_path: Optional[str], sim_cfg_name: Optional[str]) -> str:
     configs_root = (PROJECT_ROOT / "configs").resolve()
     if not _is_none_like(sim_cfg_path):
@@ -143,6 +219,7 @@ class WorldActionRobotWinPolicy:
         checkpoint_path: str,
         dataset_stats_path: Path,
         device: str,
+        text_encoder_device: Optional[str],
         model_dtype: torch.dtype,
         action_horizon: int,
         replan_steps: int,
@@ -162,6 +239,16 @@ class WorldActionRobotWinPolicy:
         self.model = instantiate(model_cfg_copy, model_dtype=model_dtype, device=device)
         self.model.load_checkpoint(checkpoint_path)
         self.model = self.model.to(device).eval()
+        if str(device).startswith("cuda"):
+            first_parameter = next(self.model.parameters(), None)
+            if first_parameter is None or first_parameter.device != torch.device(device):
+                raise RuntimeError(
+                    "FastWAM model did not remain on the requested CUDA device: "
+                    f"requested={device}, actual="
+                    f"{None if first_parameter is None else first_parameter.device}"
+                )
+            logger.info("FASTWAM_MODEL_DEVICE=%s", first_parameter.device)
+        _place_text_encoder(self.model, text_encoder_device)
 
         self.processor: FastWAMProcessor = instantiate(processor_cfg).eval()
         dataset_stats = load_dataset_stats_from_json(str(dataset_stats_path))
@@ -330,9 +417,34 @@ def get_model(usr_args: Dict[str, Any]):
         raise ValueError("`ckpt_setting` is required and must be a valid checkpoint path.")
 
     device = str(usr_args.get("device") or cfg.EVALUATION.get("device") or "cuda")
-    if device.startswith("cuda") and not torch.cuda.is_available():
-        logger.warning("CUDA is unavailable; fallback device to cpu.")
-        device = "cpu"
+    if device.startswith("cuda"):
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                f"CUDA device {device!r} was requested but CUDA is unavailable; "
+                "CPU fallback is forbidden for the formal experiment"
+            )
+        resolved_device = torch.device(device)
+        device_index = (
+            torch.cuda.current_device()
+            if resolved_device.index is None
+            else int(resolved_device.index)
+        )
+        if device_index >= torch.cuda.device_count():
+            raise RuntimeError(
+                f"Requested {device!r}, but only {torch.cuda.device_count()} CUDA "
+                "devices are visible"
+            )
+        torch.cuda.set_device(device_index)
+        properties = torch.cuda.get_device_properties(device_index)
+        logger.info(
+            "FASTWAM_CUDA_BINDING requested=%s current=%d name=%s uuid=%s "
+            "CUDA_VISIBLE_DEVICES=%s",
+            device,
+            torch.cuda.current_device(),
+            properties.name,
+            getattr(properties, "uuid", "unavailable"),
+            os.environ.get("CUDA_VISIBLE_DEVICES"),
+        )
 
     mixed_precision = str(usr_args.get("mixed_precision") or cfg.get("mixed_precision", "bf16"))
     model_dtype = _mixed_precision_to_model_dtype(mixed_precision)
@@ -368,6 +480,14 @@ def get_model(usr_args: Dict[str, Any]):
     timing_enabled = _parse_bool(
         usr_args.get("timing_enabled", cfg.EVALUATION.get("timing_enabled", False))
     )
+    text_encoder_device = usr_args.get(
+        "text_encoder_device",
+        cfg.EVALUATION.get("text_encoder_device"),
+    )
+    simulator_cuda_device = usr_args.get(
+        "simulator_cuda_device",
+        cfg.EVALUATION.get("simulator_cuda_device"),
+    )
 
     policy = WorldActionRobotWinPolicy(
         model_cfg=cfg.model,
@@ -375,6 +495,9 @@ def get_model(usr_args: Dict[str, Any]):
         checkpoint_path=str(checkpoint_path),
         dataset_stats_path=dataset_stats_path,
         device=device,
+        text_encoder_device=(
+            None if _is_none_like(text_encoder_device) else str(text_encoder_device)
+        ),
         model_dtype=model_dtype,
         action_horizon=action_horizon,
         replan_steps=replan_steps,
@@ -388,6 +511,7 @@ def get_model(usr_args: Dict[str, Any]):
         timing_enabled=timing_enabled,
         num_video_frames=(int(cfg.data.train.num_frames) - 1) // int(cfg.data.train.action_video_freq_ratio) + 1,
     )
+    _set_simulator_current_cuda_device(simulator_cuda_device)
     return policy
 
 

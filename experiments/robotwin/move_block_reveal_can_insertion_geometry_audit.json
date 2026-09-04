@@ -1,0 +1,46 @@
+{
+  "audit_scope": "scripted-expert can insertion only",
+  "policy_evaluation_started": false,
+  "renderer_or_gpu_used": false,
+  "scene_geometry_changed": false,
+  "rule": {
+    "functional_point_selection": "same nearest-post-grasp-EE world-XY rule as native place_can_basket",
+    "horizontal_target": "basket center + 0.75 * (selected native functional point - basket center) in basket-local x/z",
+    "vertical_target": "conservative collision-floor upper envelope + projected can half-height + 0.005 m",
+    "preinsert": "same target translated +0.080 m in world z"
+  },
+  "basket_floor_local_y_m": {
+    "0": 0.01617722153663635,
+    "1": 0.01350564569234848
+  },
+  "target_lanes_local_m": {
+    "basket_0_functional_0": [0.041429925, null, 0.000032492],
+    "basket_0_functional_1": [-0.041074875, null, 0.000032492],
+    "basket_1_functional_0": [0.050426048, null, -0.000018620],
+    "basket_1_functional_1": [-0.052421449, null, -0.000018620]
+  },
+  "sweep": {
+    "basket_model_ids": [0, 1],
+    "can_model_ids": [0, 1, 2, 3, 5, 6],
+    "functional_lanes": [0, 1],
+    "vertical_range_m": [0.0, 0.08],
+    "sample_spacing_m": 0.0005,
+    "collision_loading": "SAPIEN add_multiple_convex_collisions_from_file on shipped GLBs",
+    "all_samples_nonpenetrating": true,
+    "worst_sampled_separation_m": 0.003279576,
+    "continuous_path_conservative_lower_bound_m": 0.00303,
+    "worst_case": "basket 1, functional lane 0, can 3"
+  },
+  "asset_sha256": {
+    "basket_collision_base0_glb": "3d3944265793a9743b931d433bb21a3811c58314ae7c75b6ee243490e2cb82e8",
+    "basket_collision_base1_glb": "53cd390a47d060840d38143f27b94ed9dc3244919ffa64e596b6d591d7c2e587",
+    "basket_model_data0_json": "e6fd18d405041b8045730dfd4611acbc507fedc5ada6efc0d53069fb46ddbecc",
+    "basket_model_data1_json": "569efc58aa30a4b2d984cd40b2a3809d6e265adfcb3c9ffaf99fa6b0450b5281",
+    "can_collision_base0_glb": "599bd4d8a598def3a24ce52118a681c9457c94dd5bc28c41b5ad36fddee2c2ef",
+    "can_collision_base1_glb": "9b235816dc3933284f25348e4e310bbc93d24b2ada6c1b51828d620a50b97558",
+    "can_collision_base2_glb": "68e8ddfdc4580a4f7e02ed4c6705ee4b173001b674df023658931b7d9d7d268f",
+    "can_collision_base3_glb": "081f739d3dc6e82afb6a4d0659352b67dffbba7b053423584ab642b9cc381a15",
+    "can_collision_base5_glb": "51d95d56c529edcced375c816cb36ec82d12ac156daed4c8e3ec6287a80fd3e2",
+    "can_collision_base6_glb": "e2fdb8c03a4332c288386108a73ad9fa3f80bcbedd8a6974627fc67ab389dab9"
+  }
+}

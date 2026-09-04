@@ -1,0 +1,37 @@
+{
+  "audit_scope": "scripted-expert downstream implementation selection only",
+  "version": "V0.3.9",
+  "policy_evaluation_started": false,
+  "scene_geometry_changed": false,
+  "task_semantics_changed": false,
+  "condition_definitions_changed": false,
+  "success_predicate_changed": false,
+  "input_evidence": {
+    "v0_3_8_run_root": "/home/zhaizicheng/Reasoning/FastWAM/asre_results/move_block_reveal_can/formal_frozen_v0_3_8_20260903_152500",
+    "reset": "passed all 3 seeds x 3 conditions, paired-state, visibility, stability, and screenshot checks",
+    "custom_high_transfer_expert": "0/9 condition cells and 0/27 attempts; every attempt failed planning the first source-side high-clearance waypoint after a successful can grasp",
+    "missing_reveal": "9/9 missing attempts completed block reveal before the common downstream failure; can became visible and meaningful block-can contact remained zero"
+  },
+  "native_parent_probe": {
+    "task_scene": "move_block_reveal_can",
+    "condition": "visible",
+    "seed": 4300000,
+    "method": "place_can_basket.play_once(task_instance)",
+    "task_module": "/home/zhaizicheng/Reasoning/FastWAM/third_party/RoboTwin/envs/move_block_reveal_can.py",
+    "plan_success": true,
+    "final_move_block_reveal_can_success": true,
+    "instant_success": true,
+    "can_aabb_laterally_inside": true,
+    "can_center_vertically_inside": true,
+    "can_contacts_basket": true,
+    "can_contacts_no_gripper": true,
+    "basket_lifted_by_native_parent_diagnostic": true
+  },
+  "v0_3_9_implementation": {
+    "visible": "call the unmodified RoboTwin place_can_basket.play_once parent expert",
+    "oracle_reveal": "apply the block-only oracle handoff, then call the same unmodified parent expert",
+    "missing": "run the already validated block reveal, return the arm home, then call the same unmodified parent expert",
+    "instruction_after_expert": "reset to the invariant empty placeholder mapping used by the fixed instruction Put the can into the basket."
+  },
+  "selection_basis": "This restores direct reuse of RoboTwin's native parent expert as required by the task specification. The choice was made entirely from simulator/expert evidence before any FastWAM inference and does not select or alter task geometry based on policy behavior."
+}

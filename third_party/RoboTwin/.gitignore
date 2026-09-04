@@ -8,7 +8,8 @@ envs/curobo
 *.zip
 viewer_show.*
 eval_video/
-task_config/
+# Runtime configuration is versioned here so this vendored checkout is the
+# executable RoboTwin source of truth.  Large assets remain external.
 **/.DS_Store
 
 # eval result
@@ -16,10 +17,13 @@ eval_result/
 
 # Code Generation
 assets/*
+/assets
 !assets/_download.py
 !assets/files
 
 policy/weights/*
+# Runtime-only link; the maintained adapter is experiments/robotwin/fastwam_policy.
+policy/fastwam_policy
 
 envs/curobo/*
 

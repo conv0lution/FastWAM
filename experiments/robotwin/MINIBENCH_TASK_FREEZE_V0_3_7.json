@@ -1,0 +1,164 @@
+{
+  "freeze_name": "MINIBENCH_TASK_FREEZE_V0_3_7",
+  "version": "V0.3.7",
+  "frozen_at": "2026-09-03T15:02:00+08:00",
+  "git_commit": "6a960b3b40c8c14fc2a6b4337153837a2acbf482",
+  "supersedes": "MINIBENCH_TASK_FREEZE_V0_3_6",
+  "parent_manifest": "experiments/robotwin/MINIBENCH_TASK_FREEZE_V0_3_6.json",
+  "parent_manifest_sha256": "c8b7c622ffd74372904284b38907e2ba9641a6dce923f8e992fb80edfc0e5af9",
+  "policy_evaluation_started": false,
+  "benchmark_selection_basis": "simulator-only validity; no FastWAM inference has been run on any move_block_reveal_can version",
+  "bug_classification": "pre-policy scripted-expert insertion correction only; task scene, sampling, conditions, seeds, camera, horizon, visibility, instruction, and success predicate are unchanged from V0.3",
+  "reason": "V0.3.6 was stopped during reset before expert or FastWAM execution because a concurrent read-only audit found that its centered scripted-expert insertion used the basket outer metadata AABB bottom and could penetrate the solid base by about 11-13 mm. The same audit also found that a center vertical approach intersects the basket handle, while using the exact native functional-point horizontal location at floor height can penetrate the tapered lower wall. V0.3.7 derives a conservative central-floor upper envelope from the shipped basket collision GLBs, adds the already declared 5 mm can-bottom clearance, and uses the lane 75% from basket center toward the native functional point nearest the post-grasp arm. A collision sweep across both baskets, all six sampled cans, both lanes, and the full 80 mm approach found a conservative continuous-path clearance above 3.03 mm. This changes only the scripted expert target. No task geometry, condition, seed, camera, horizon, visibility rule, instruction, or success predicate changed, and no FastWAM result exists.",
+  "source_of_truth_robotwin": "/home/zhaizicheng/Reasoning/FastWAM/third_party/RoboTwin",
+  "asset_donor_only": "/local_home/zhaizicheng/fastwam_robotwin/RoboTwin/assets",
+  "task": "move_block_reveal_can",
+  "instruction": "Put the can into the basket.",
+  "task_configuration": {
+    "can_sampling": {
+      "left_x_m": [-0.25, -0.2],
+      "right_x_m": [0.2, 0.25],
+      "y_m": [0.0, 0.1],
+      "model_ids": [0, 1, 2, 3, 5, 6]
+    },
+    "basket_sampling": {
+      "left_arm_case_x_m": [0.02, 0.02],
+      "right_arm_case_x_m": [-0.02, -0.02],
+      "y_m": [-0.08, -0.05],
+      "model_ids": [0, 1]
+    },
+    "occluder": {
+      "implementation": "one dynamic rigid actor with procedural opaque body and grasp cap, matching visual/collision geometry",
+      "opaque_body_half_size_m": [0.055, 0.025, 0.09],
+      "grasp_cap_half_size_m": [0.03, 0.03, 0.025],
+      "grasp_cap_center_z_m": 0.115,
+      "compound_local_aabb_min_m": [-0.055, -0.03, -0.09],
+      "compound_local_aabb_max_m": [0.055, 0.03, 0.14],
+      "overall_axis_aligned_full_size_m": [0.11, 0.06, 0.23],
+      "mass_kg": 0.04,
+      "color_rgb": [0.12, 0.35, 0.85],
+      "occluding_pose_rule": "[can_x, can_y - 0.080, table_top + 0.090], identity quaternion",
+      "revealed_pose_rule": "[sign(can_x) * 0.300, 0.250, table_top + 0.090], identity quaternion"
+    },
+    "conditions": {
+      "shared_base": "all conditions construct and settle the block at occluding_pose through the same fixed-seed path",
+      "visible": "before first policy observation, move only block to revealed_pose, zero velocity, advance five physics steps",
+      "missing": "leave block at occluding_pose, advance the same five physics steps, no intervention",
+      "oracle_reveal": "start exactly as missing; before first policy observation apply the exact visible block-only intervention"
+    },
+    "paired_state_absolute_tolerance": 0.0001,
+    "visibility": {
+      "detector": "SAPIEN per-actor instance segmentation",
+      "missing": "zero can pixels independently in head, left wrist, and right wrist",
+      "visible_and_oracle": "at least one policy camera contains at least 32 can pixels",
+      "basket": "at least 32 head-camera pixels",
+      "block": "at least 32 pixels in at least one policy camera"
+    },
+    "success": "can projected full AABB laterally contained by basket metadata bounds; can center vertically inside conservative placement range; basket upright; can contacts basket; can-side gripper open; can contacts neither gripper; relative can/basket motion below fixed thresholds for 25 actual physics steps; block ignored; check_success pure",
+    "success_thresholds": {
+      "lateral_margin_m": 0.002,
+      "vertical_tolerance_m": 0.002,
+      "relative_linear_speed_mps": 0.05,
+      "relative_angular_speed_radps": 1.0,
+      "consecutive_actual_physics_steps": 25
+    },
+    "episode_horizon": 1000,
+    "task_config": "demo_clean",
+    "paired_pilot_seeds": [4300000, 4300001, 4300002]
+  },
+  "scripted_expert": {
+    "visible_and_oracle": "native grasp followed by collision-audited basket functional-lane insertion, release, retreat, home, persistent settle",
+    "missing": "compound block reveal, direct return home, then identical functional-lane insertion",
+    "block_required_vertical_clearance_m": 0.05,
+    "block_clearance_validation_tolerance_m": 0.002,
+    "block_lift_command_buffer_m": 0.01,
+    "meaningful_contact": "any point with signed separation <= 0 or applied impulse norm > 0",
+    "max_can_translation_during_reveal_m": 0.005,
+    "max_can_rotation_during_reveal_deg": 3.0,
+    "can_preinsert_height_m": 0.08,
+    "can_bottom_clearance_m": 0.005,
+    "can_functional_lane_fraction": 0.75,
+    "basket_interior_floor_local_y_m": {
+      "0": 0.01617722153663635,
+      "1": 0.01350564569234848
+    },
+    "basket_floor_measurement": "audited conservative upper envelope of the shipped collision-mesh floor over every sampled can footprint at the basket center; values exceed the measured footprint maxima by about 0.034 mm for basket 0 and 0.636 mm for basket 1",
+    "can_insertion_target": "choose the native functional point nearest the post-grasp EE; local horizontal target is basket center + 0.75 * (functional point - basket center); local vertical center = conservative interior-floor envelope + projected can half-height + 0.005 m; orientation and EE-to-can grasp transform preserved",
+    "collision_sweep_audit": "basket ids 0/1 x can ids 0,1,2,3,5,6 x both functional lanes; final-to-80-mm-preinsert sweep sampled every 0.5 mm with the same convex collision loading as RoboTwin; worst sampled separation 3.279576 mm and conservative continuous-path lower bound 3.03 mm",
+    "max_attempts_per_fixed_seed_condition": 3,
+    "minimum_same_seed_state_reconstructions": 2,
+    "seed_substitution": false
+  },
+  "evaluation_plan_frozen_before_fastwam": {
+    "native_downstream_calibration": {
+      "task": "place_can_basket",
+      "seeds": [100000, 100001, 100002, 100003, 100004],
+      "episodes": 5,
+      "admission_threshold": 0.8
+    },
+    "exact_block_reveal_calibration": {
+      "task": "move_block_reveal_can_block_calibration",
+      "instruction": "Move the block aside to reveal the can.",
+      "seeds": [200000, 200001, 200002, 200003, 200004],
+      "episodes": 5,
+      "admission_threshold": 0.7,
+      "success": "same frozen Missing scene/block; block translated >=0.08 m, can visible, block released and not in meaningful contact with can, block stable for 25 physics steps; can placement not scored"
+    },
+    "admission_rule": "after simulator audits and runtime freeze pass, run both calibrations once; run paired pilot only if both thresholds pass; never alter frozen task from policy observations",
+    "pilot_episodes_per_condition": 3
+  },
+  "gpu_protocol": {
+    "default_simulator_physical_gpu": 6,
+    "default_policy_physical_gpu": 7,
+    "allowed_physical_indices": [4, 5, 6, 7],
+    "guard": "before every launch save full nvidia-smi, compute-app, and pmon; refuse any target GPU containing non-Xorg activity",
+    "isolation": "SAPIEN by PCI; CUDA by ordered UUIDs; bubblewrap exposes only selected NVIDIA/DRI nodes",
+    "fastwam_device": "cuda:1 inside ordered [simulator UUID, policy UUID] CUDA_VISIBLE_DEVICES",
+    "cpu_fallback": false
+  },
+  "v0_3_5_evidence": {
+    "formal_run_root": "/home/zhaizicheng/Reasoning/FastWAM/asre_results/move_block_reveal_can/formal_frozen_v0_3_5_20260903_140300",
+    "reset": "passed all checks; 234 screenshots and hashes saved",
+    "main_scripted_expert": "5/9 condition cells had witnesses; failures diagnosed at scripted trajectory/predicate instrumentation only",
+    "fastwam": "not_run"
+  },
+  "v0_3_6_evidence": {
+    "formal_run_root": "/home/zhaizicheng/Reasoning/FastWAM/asre_results/move_block_reveal_can/formal_frozen_v0_3_6_20260903_143100",
+    "reset": "interrupted before completion after the pre-expert insertion audit found the basket-floor target error",
+    "main_scripted_expert": "not_run",
+    "fastwam": "not_run"
+  },
+  "pre_policy_validation_required": {
+    "reset": "all paired-state, visibility, stability, contact, success-purity, screenshot-count/hash assertions pass",
+    "main_scripted_expert": "all 3 seeds x 3 conditions have a complete fixed-seed witness and repeatable state",
+    "calibration_scripted_expert": "all five native downstream and all five exact reveal seeds have a fixed-seed witness",
+    "formal_runtime_freeze": "hash sources/configs/assets/screenshots/audits/diff/status/seeds/model inputs/reproduction script before first FastWAM load"
+  },
+  "frozen_sha256": {
+    "task_source": "c40e8fa674f4f4ac0ccf46801d45886ef872a0dc3d3b8f5d9b51a8611feca664",
+    "block_calibration_source": "46710ccc3c843e03b6852e2df548b5378198a259dbe16a5e491dc0adb89cb2f9",
+    "base_task_source": "81bb9e1f75b8144911b5a845623137372d2c0a1bc936008494b98242fb75a46c",
+    "simulator_test": "6341735f3d28e9e6290ccb3ee6834751668f7e01c0f59a83abbbf9fe9d62acde",
+    "eval_policy": "47e519a30bd5a79213437829233cb4e9019237c5e20d9635613fc4615dc227ed",
+    "render_preflight": "f8eecaf5b05e43d132ae3a48a702eee9ab5d46839a0cdbb66ab9cba620c6519d",
+    "fastwam_entrypoint": "af4db8fafc061c99b17951ecbbd7c25fcb309e71799cffca60197423b21061d4",
+    "fastwam_adapter": "240d8f41e541e35f406b3d9fc865910f9e9759ab846c4c12e53954118b41d2ce",
+    "reproduction_script": "5deeedb2b54d02d240a7294a2f7758517fe469a28ff20833e5854d8dfcf783a8",
+    "summarizer": "5e83bce50942b793b106137c0e3ac32516908d55e6563c0347703d6d8ee72445",
+    "insertion_geometry_audit": "73ffd1c9e2a1004b895a378aa956c7f661837cd0b614fffc77dd2434a405fe5e",
+    "paired_seed_manifest": "ef4f8650c4bd5f25943903bedfde04676176937d3fe4b161ce5597ad71f6e39d",
+    "place_can_calibration_seed_manifest": "a63134878598c7a6968b28499a26b1773637060d5a950d8de900171e537ef51f",
+    "exact_block_calibration_seed_manifest": "9f3ae3f854cdd9834b7dfe65caba6c49c3f3e6caf741d7392ba592254e043893",
+    "fastwam_config": "6095648a779f89d6cb3eb1ea24f2e17b0a2876f035b358020425f835a4bd88d5",
+    "step_limit_config": "cad033859130a3c8eb49397f0597deb2f87aea389738082383a616e2bc75a82a",
+    "main_instruction": "1efc71874d579c9e31d4ab88c06b58d54ef3a50bf5bd10277d6fbb5a395716fe",
+    "block_calibration_instruction": "e991883062c9386bfe3a05020f8573ad63e1fa00c69c9bf42f02ae9e6ce62273"
+  },
+  "validation_status_at_project_prefreeze": {
+    "v0_3_7_reset": "not_run",
+    "v0_3_7_main_scripted_expert": "not_run",
+    "v0_3_7_calibration_scripted_expert": "not_run",
+    "v0_3_7_formal_runtime_freeze": "not_run",
+    "fastwam": "not_run"
+  }
+}

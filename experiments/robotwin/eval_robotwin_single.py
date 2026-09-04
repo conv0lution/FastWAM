@@ -4,7 +4,7 @@ RobotWin single-task evaluation entrypoint (Hydra).
 Features:
 - Read `configs/sim_robotwin.yaml`.
 - Check or create the symlink:
-  `RoboTwin/policy/fastwam -> experiments/robotwin/fastwam`.
+  `RoboTwin/policy/fastwam_policy -> experiments/robotwin/fastwam_policy`.
 - Forward config overrides to the official RoboTwin entrypoint
   `script/eval_policy.py` and save logs.
 
@@ -42,6 +42,7 @@ from omegaconf import DictConfig, OmegaConf
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 POLICY_NAME = "fastwam_policy"
+ROBOTWIN_SOURCE_OF_TRUTH = (PROJECT_ROOT / "third_party" / "RoboTwin").resolve()
 
 
 def _resolve_path(path_str: str, *, base: Path) -> Path:
@@ -156,11 +157,16 @@ def main(cfg: DictConfig):
     ckpt_path = _resolve_path(str(cfg.ckpt), base=PROJECT_ROOT)
     if not ckpt_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
-    ckpt_tag = _resolve_ckpt_tag(ckpt_path)
+    _resolve_ckpt_tag(ckpt_path)  # validate naming without changing explicit output paths
 
     robotwin_root = _resolve_path(str(cfg.EVALUATION.robotwin_root), base=PROJECT_ROOT)
     if not robotwin_root.exists():
         raise FileNotFoundError(f"RoboTwin root not found: {robotwin_root}")
+    if robotwin_root != ROBOTWIN_SOURCE_OF_TRUTH:
+        raise RuntimeError(
+            "FastWAM RoboTwin source-of-truth violation: "
+            f"resolved {robotwin_root}, required {ROBOTWIN_SOURCE_OF_TRUTH}"
+        )
 
     policy_source_dir = (PROJECT_ROOT / "experiments" / "robotwin" / POLICY_NAME).resolve()
     if not policy_source_dir.is_dir():
@@ -169,33 +175,27 @@ def main(cfg: DictConfig):
     _ensure_policy_symlink(robotwin_root=robotwin_root, policy_source_dir=policy_source_dir)
 
     output_dir = _resolve_path(str(cfg.EVALUATION.output_dir), base=PROJECT_ROOT)
-    run_ts = output_dir.name
-    if run_ts == "":
-        raise ValueError(f"Invalid EVALUATION.output_dir (missing run_ts): {output_dir}")
-    run_output_dir = (
-        PROJECT_ROOT
-        / "evaluate_results"
-        / "robotwin"
-        / ckpt_tag
-        / run_ts
-    )
+    run_output_dir = output_dir
     run_output_dir.mkdir(parents=True, exist_ok=True)
+    condition_tag = str(cfg.EVALUATION.minibench_condition or "native")
     log_file = run_output_dir / (
-        f"eval_{str(cfg.EVALUATION.task_name)}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+        f"eval_{str(cfg.EVALUATION.task_name)}_{condition_tag}_"
+        f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
     )
-    robotwin_eval_base = (
-        PROJECT_ROOT
-        / "evaluate_results"
-        / "robotwin"
-        / ckpt_tag
-        / run_ts
-        / str(cfg.EVALUATION.task_name)
-    )
+    robotwin_eval_base = run_output_dir / str(cfg.EVALUATION.task_name) / condition_tag
 
     sim_cfg_path = (PROJECT_ROOT / "configs" / "sim_robotwin.yaml").resolve()
     sim_task = HydraConfig.get().runtime.choices.get("task")
 
     dataset_stats_path = _resolve_dataset_stats_path(cfg, ckpt_path)
+
+    render_device = cfg.EVALUATION.render_device
+    if render_device is None or not str(render_device).strip():
+        raise ValueError(
+            "`EVALUATION.render_device` is required so SAPIEN/Vulkan cannot "
+            "silently select a GPU outside the reserved set. Use a PCI alias "
+            "such as `pci:0000:81:00.0`."
+        )
 
     overrides: list[str] = []
     _append_override(overrides, "task_name", cfg.EVALUATION.task_name)
@@ -211,6 +211,16 @@ def main(cfg: DictConfig):
     _append_override(overrides, "eval_output_dir", str(robotwin_eval_base))
     _append_override(overrides, "mixed_precision", cfg.mixed_precision)
     _append_override(overrides, "device", cfg.EVALUATION.device)
+    _append_override(
+        overrides,
+        "text_encoder_device",
+        cfg.EVALUATION.text_encoder_device,
+    )
+    _append_override(
+        overrides,
+        "simulator_cuda_device",
+        cfg.EVALUATION.simulator_cuda_device,
+    )
     _append_override(overrides, "dataset_stats_path", str(dataset_stats_path))
     _append_override(overrides, "action_horizon", cfg.EVALUATION.action_horizon)
     _append_override(overrides, "replan_steps", cfg.EVALUATION.replan_steps)
@@ -226,6 +236,16 @@ def main(cfg: DictConfig):
         "skip_get_obs_within_replan",
         cfg.EVALUATION.skip_get_obs_within_replan,
     )
+    _append_override(overrides, "minibench_condition", cfg.EVALUATION.minibench_condition)
+    seed_manifest_path = _resolve_optional_path(
+        cfg.EVALUATION.seed_manifest_path,
+        base=PROJECT_ROOT,
+    )
+    _append_override(
+        overrides,
+        "seed_manifest_path",
+        str(seed_manifest_path) if seed_manifest_path is not None else None,
+    )
 
     cmd = [
         sys.executable,
@@ -239,7 +259,14 @@ def main(cfg: DictConfig):
 
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = str(cfg.gpu_id)
+    env["ROBOTWIN_RENDER_DEVICE"] = str(render_device).strip()
     env["PYTHONUNBUFFERED"] = "1"
+    env["FASTWAM_ROBOTWIN_SOURCE_OF_TRUTH"] = str(ROBOTWIN_SOURCE_OF_TRUTH)
+    # eval_policy invokes ffmpeg by name.  The selected conda environment
+    # provides it next to this interpreter even when the parent shell is not
+    # activated.
+    interpreter_bin = str(Path(sys.executable).resolve().parent)
+    env["PATH"] = interpreter_bin + os.pathsep + env.get("PATH", "")
 
     with open(log_file, "w", encoding="utf-8") as log_f:
         process = subprocess.Popen(
@@ -265,7 +292,10 @@ def main(cfg: DictConfig):
     print(f"Evaluation finished successfully. Log saved to: {log_file}")
     OmegaConf.save(
         config=cfg,
-        f=str(run_output_dir / f"eval_config_{str(cfg.EVALUATION.task_name)}.yaml"),
+        f=str(
+            run_output_dir
+            / f"eval_config_{str(cfg.EVALUATION.task_name)}_{condition_tag}.yaml"
+        ),
     )
 
 

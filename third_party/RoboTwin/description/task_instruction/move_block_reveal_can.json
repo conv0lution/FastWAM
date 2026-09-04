@@ -1,0 +1,11 @@
+{
+  "full_description": "Put the can into the basket.",
+  "schema": "No placeholders. The instruction is invariant across conditions.",
+  "preference": "Use the exact instruction without mentioning the block or reveal.",
+  "seen": [
+    "Put the can into the basket."
+  ],
+  "unseen": [
+    "Put the can into the basket."
+  ]
+}

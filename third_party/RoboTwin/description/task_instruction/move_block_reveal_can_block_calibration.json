@@ -1,0 +1,11 @@
+{
+  "full_description": "Move the block aside to reveal the can.",
+  "schema": "No placeholders. This is the frozen task-specific reveal calibration.",
+  "preference": "Use the exact explicit reveal instruction.",
+  "seen": [
+    "Move the block aside to reveal the can."
+  ],
+  "unseen": [
+    "Move the block aside to reveal the can."
+  ]
+}

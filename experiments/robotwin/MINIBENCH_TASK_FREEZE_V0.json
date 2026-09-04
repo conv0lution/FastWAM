@@ -1,0 +1,135 @@
+{
+  "freeze_name": "MINIBENCH_TASK_FREEZE_V0",
+  "frozen_at": "2026-09-03T02:15:19+08:00",
+  "freeze_scope": "task source, simulator configuration, condition definitions, seed protocol, success predicate, and evaluation protocol",
+  "freeze_status": "configuration_frozen_before_any_fastwam_evaluation",
+  "validation_status_at_freeze": {
+    "current_source_reset_audit": "not_run",
+    "current_source_scripted_expert_audit": "not_run",
+    "fastwam_native_calibration": "not_run",
+    "fastwam_three_condition_pilot": "not_run",
+    "reason": "User requested that all GPU work stop and the current task be frozen immediately. Earlier simulator artifacts were generated from older source fingerprints and are retained only as historical evidence."
+  },
+  "source_of_truth_robotwin": "/home/zhaizicheng/Reasoning/FastWAM/third_party/RoboTwin",
+  "asset_donor_only": "/local_home/zhaizicheng/fastwam_robotwin/RoboTwin/assets",
+  "asset_donor_git_head": "bf44be51cf5717a5595ce59447f2cf5263d2aa95",
+  "fastwam_git_head": "6a960b3b40c8c14fc2a6b4337153837a2acbf482",
+  "task": "move_block_reveal_can",
+  "task_config": "demo_clean",
+  "instruction": "Put the can into the basket.",
+  "episode_horizon": 1000,
+  "paired_seeds": [
+    4300000,
+    4300001,
+    4300002
+  ],
+  "can_sampling": {
+    "arm_choice": "uniform left/right using the native place_can_basket sampling order",
+    "left_x_m": [-0.25, -0.20],
+    "right_x_m": [0.20, 0.25],
+    "y_m": [0.0, 0.1],
+    "model_ids": [0, 1, 2, 3, 5, 6],
+    "mass_kg": 0.01
+  },
+  "basket_sampling": {
+    "x_m_when_can_left": [0.02, 0.02],
+    "x_m_when_can_right": [-0.02, -0.02],
+    "y_m": [-0.08, -0.05],
+    "model_ids": [0, 1],
+    "mass_kg": 0.5
+  },
+  "occluder": {
+    "implementation": "RoboTwin procedural dynamic opaque create_box, boxtype=long",
+    "half_size_xyz_m": [0.055, 0.025, 0.09],
+    "full_size_xyz_m": [0.11, 0.05, 0.18],
+    "mass_kg": 0.04,
+    "color_rgb": [0.12, 0.35, 0.85],
+    "occluding_pose": "[can_x, can_y - 0.080, table_top + 0.090], quaternion [1,0,0,0]",
+    "revealed_pose": "[sign(can_x) * 0.340, -0.140, table_top + 0.090], quaternion [1,0,0,0]"
+  },
+  "conditions": {
+    "visible": "The block starts at the revealed pose and is canonicalized to that same pose before policy handoff.",
+    "missing": "The block starts at the occluding pose and receives no intervention.",
+    "oracle_reveal": "The pre-intervention state is identical to missing; before the first policy observation only the block is teleported to the visible revealed pose and its linear/angular velocity is zeroed.",
+    "equal_handoff_settle": "All three conditions receive exactly five scene steps before the first policy observation."
+  },
+  "pairing": {
+    "absolute_tolerance": 0.0001,
+    "same_seed_requirement": "can model/pose, basket model/pose, robot qpos/qvel, cameras, textures, randomization config, lighting, clutter, and all non-block actor state must match",
+    "intended_difference": "only the block pose/reveal intervention"
+  },
+  "visibility": {
+    "detector": "SAPIEN per-scene actor-ID segmentation in head_camera, left_camera, and right_camera",
+    "visible_pixel_threshold": 32,
+    "missing_requirement": "can pixel count is exactly zero in every one of the three cameras",
+    "visible_and_oracle_requirement": "can has at least 32 pixels in at least one of the three cameras",
+    "basket_requirement": "basket has at least 32 pixels in head_camera",
+    "block_requirement": "block has at least 32 pixels in at least one of the three cameras"
+  },
+  "success": {
+    "block_is_ignored": true,
+    "predicate": "The can center is within the basket metadata lateral bounds and vertical placement interval; the basket is upright; the can contacts the basket but not the table; the can-side gripper is open; and can/basket relative motion remains below the frozen thresholds for 25 consecutive physics steps.",
+    "lateral_margin_m": 0.002,
+    "vertical_tolerance_m": 0.002,
+    "maximum_relative_linear_speed_mps": 0.05,
+    "maximum_relative_angular_speed_radps": 1.0,
+    "consecutive_physics_steps": 25,
+    "consecutive_duration_s": 0.1,
+    "gripper_contact": "diagnostic only"
+  },
+  "episode_tracking": {
+    "block_moved_translation_threshold_m": 0.08,
+    "block_moved_rotation_threshold_deg": 15.0,
+    "sample_timing": "after every qpos action and requested observation",
+    "can_visibility": "tracked in all three policy cameras"
+  },
+  "expert_protocol": {
+    "visible": "direct can-to-basket scripted expert",
+    "missing": "grasp/lift/translate/release block, verify can visible, then can-to-basket",
+    "oracle_reveal": "environment oracle moves only the block before handoff, then direct can-to-basket",
+    "current_source_result": "not run at freeze"
+  },
+  "evaluation_protocol": {
+    "native_place_can_basket": {
+      "episodes": 5,
+      "admission_threshold": 0.8
+    },
+    "native_approximate_block_movement": {
+      "task": "handover_block",
+      "episodes": 5,
+      "admission_threshold": 0.7,
+      "evidence_boundary": "approximate native long-block manipulation analogue, not an exact calibration of this occluder or reveal sequence"
+    },
+    "pilot_episodes_per_condition": 3,
+    "rule": "Run policy evaluation only on this frozen task. Never change geometry, sampling, conditions, camera, horizon, randomization, or success predicate in response to FastWAM results."
+  },
+  "gpu_policy": {
+    "forbidden_physical_indices": [0, 1, 2, 3],
+    "eligible_physical_indices": [4, 5, 6, 7],
+    "launch_rule": "Immediately before every GPU launch, require the selected GPU to have no foreign compute or non-Xorg graphics context; otherwise refuse to launch.",
+    "render_isolation": "Explicit SAPIEN PCI render device plus a bubblewrap device namespace exposing only the selected NVIDIA and matching DRI nodes."
+  },
+  "source_sha256": {
+    "third_party/RoboTwin/.gitignore": "9bad4ff82e004b9ee604209c9651a9d14d440db85efa0a43b1f28727594a49cd",
+    "third_party/RoboTwin/README.vendor.md": "5142346bb0c45e8e0b231cfbb6200c7fffe1427a03f8f550c05c822ae61bac05",
+    "third_party/RoboTwin/envs/_base_task.py": "e54c7698d17ba33f1300a1486fc64c6da4cd2d02339a2319873be0c80198f7cf",
+    "third_party/RoboTwin/envs/place_can_basket.py": "9f24e5ac98146babe93c68cb46baaf1d7bf21e38dbfc7c0b29e7020ae764e7f0",
+    "third_party/RoboTwin/envs/utils/create_actor.py": "6bababee8e70da2460b2bbf47d3b5fbb20ccf73368782a7be596a63c962dce6d",
+    "third_party/RoboTwin/envs/move_block_reveal_can.py": "e0a91288d0c86b98c6516bec546dc419707ea5658414aa824729c6c5331af5b4",
+    "third_party/RoboTwin/description/task_instruction/move_block_reveal_can.json": "1efc71874d579c9e31d4ab88c06b58d54ef3a50bf5bd10277d6fbb5a395716fe",
+    "third_party/RoboTwin/task_config/_camera_config.yml": "a535e897288dbe130bd2f9ed7e5f22604eb33a9a2aab71b543fbd84d0cdd4521",
+    "third_party/RoboTwin/task_config/_embodiment_config.yml": "b0a198ff27bf6bf6b73162d2d1adafc7e73fcdf53f39943e67e40fee15bd83fa",
+    "third_party/RoboTwin/task_config/_eval_step_limit.yml": "0f16a410d4d92b3bb00462eb022a8ec094c3aa93441eb1374b0749f3746bf9f0",
+    "third_party/RoboTwin/task_config/demo_clean.yml": "ac6d7c13fa3eb5b935a9314ce0b68a7c338e617dec941bb309c12bc726bb8348",
+    "third_party/RoboTwin/task_config/demo_randomized.yml": "e254daf1ce84e7ece9ac9e0c435ffd960985798804af9e97b3c2db8c741c241f",
+    "third_party/RoboTwin/script/eval_policy.py": "658477e56632f684104a0852b977ed847610c8d2fd12dc46325be4e8d716f433",
+    "third_party/RoboTwin/script/test_render.py": "f8eecaf5b05e43d132ae3a48a702eee9ab5d46839a0cdbb66ab9cba620c6519d",
+    "configs/sim_robotwin.yaml": "6095648a779f89d6cb3eb1ea24f2e17b0a2876f035b358020425f835a4bd88d5",
+    "experiments/robotwin/eval_robotwin_single.py": "af4db8fafc061c99b17951ecbbd7c25fcb309e71799cffca60197423b21061d4",
+    "experiments/robotwin/move_block_reveal_can_seeds.json": "ef4f8650c4bd5f25943903bedfde04676176937d3fe4b161ce5597ad71f6e39d",
+    "experiments/robotwin/summarize_move_block_reveal_can.py": "846ba4a51825034c9e91e2620de0cb6fa83311bce42fb886f62e7feb185391e6",
+    "experiments/robotwin/test_move_block_reveal_can.py": "e08a78945012066ac43d3bfa03b90913a43896c69cd9f78a660fac0cdf6a5b1d",
+    "scripts/run_move_block_reveal_can.sh": "cae5a66111a7409a71ffcf7815d45e933ff9cb5e35dcca367c5cb054636ea249"
+  },
+  "working_tree_diff_sha256_excluding_this_manifest": "182a255629ab7eca147f128e61cb838e9ade436e69ea1b43382d186830944494"
+}

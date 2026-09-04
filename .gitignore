@@ -8,6 +8,7 @@ assets/
 runs
 runs/
 evaluate_results/
+asre_results/
 .deepspeed*
 
 volc/

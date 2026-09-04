@@ -1,0 +1,6 @@
+{
+  "protocol": "fixed exact-scene reveal calibration seeds selected before FastWAM evaluation",
+  "task": "move_block_reveal_can_block_calibration",
+  "task_config": "demo_clean",
+  "seeds": [200000, 200001, 200002, 200003, 200004]
+}
